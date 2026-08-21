@@ -682,6 +682,7 @@ MENU = [
     "Product Recommender",
     "Simulasi Bundling",
     "Peta Korelasi",
+    "Kalkulator Keranjang",
     "Upload Data",
 ]
 
@@ -964,7 +965,88 @@ def halaman_peta_korelasi():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 10 — HALAMAN: UPLOAD DATA (dulunya 6_Upload_Data.py)
+# BAGIAN 10 — HALAMAN: KALKULATOR KERANJANG
+# ════════════════════════════════════════════════════════════════
+
+def halaman_kalkulator_keranjang():
+    render_brand_header()
+    st.title("Kalkulator Keranjang")
+    st.caption("Susun beberapa produk sekaligus seperti simulasi belanja nyata. Sistem menghitung total harga keranjang dan mengecek apakah ada pasangan produk di dalamnya yang punya asosiasi bundling kuat (berdasarkan rules Apriori yang sama seperti halaman Simulasi Bundling).")
+
+    data = load_data()
+    rfm = data["rfm"]
+    daftar_produk = sorted(rfm["ITEM"].unique())
+
+    if "keranjang" not in st.session_state:
+        st.session_state.keranjang = []
+
+    st.subheader("Tambah Produk ke Keranjang")
+    col1, col2, col3 = st.columns([2.5, 1, 1])
+    produk_pilih = col1.selectbox("Pilih produk", daftar_produk, key="kk_produk")
+    qty_pilih = col2.number_input("Jumlah", min_value=1, value=1, step=1, key="kk_qty")
+    col3.write("")
+    col3.write("")
+    if col3.button("Tambahkan", type="primary", use_container_width=True):
+        harga_satuan = float(rfm.loc[rfm["ITEM"] == produk_pilih, "Monetary"].iloc[0]
+                              / max(rfm.loc[rfm["ITEM"] == produk_pilih, "Total_QTY"].iloc[0], 1))
+        sudah_ada = next((item for item in st.session_state.keranjang if item["produk"] == produk_pilih), None)
+        if sudah_ada:
+            sudah_ada["qty"] += qty_pilih
+        else:
+            st.session_state.keranjang.append({
+                "produk": produk_pilih, "qty": qty_pilih, "harga_satuan": harga_satuan
+            })
+        st.rerun()
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+
+    if not st.session_state.keranjang:
+        st.info("Keranjang masih kosong. Tambahkan produk di atas untuk mulai simulasi.")
+        return
+
+    st.subheader("Isi Keranjang")
+    total_keranjang = 0
+    for i, item in enumerate(st.session_state.keranjang):
+        subtotal = item["harga_satuan"] * item["qty"]
+        total_keranjang += subtotal
+        c1, c2, c3, c4, c5 = st.columns([2.5, 1, 1.3, 1.3, 0.6])
+        c1.write(item["produk"])
+        c2.write(f"x{item['qty']}")
+        c3.write(f"Rp {item['harga_satuan']:,.0f}".replace(",", "."))
+        c4.write(f"Rp {subtotal:,.0f}".replace(",", "."))
+        if c5.button("🗑", key=f"hapus_{i}"):
+            st.session_state.keranjang.pop(i)
+            st.rerun()
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    col_total, col_kosong = st.columns([1, 2])
+    col_total.metric("Total Keranjang", f"Rp {total_keranjang:,.0f}".replace(",", "."))
+    if col_kosong.button("Kosongkan Keranjang"):
+        st.session_state.keranjang = []
+        st.rerun()
+
+    if len(st.session_state.keranjang) >= 2:
+        st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+        st.subheader("Cek Peluang Bundling di Keranjang Ini")
+        produk_keranjang = [item["produk"] for item in st.session_state.keranjang]
+        ditemukan_bundling = False
+        for i in range(len(produk_keranjang)):
+            for j in range(i + 1, len(produk_keranjang)):
+                hasil = simulasi_bundling(produk_keranjang[i], produk_keranjang[j], data)
+                if hasil["status"] == "ditemukan_resmi":
+                    ditemukan_bundling = True
+                    st.markdown('<span class="badge-ok">Rule resmi Apriori</span>', unsafe_allow_html=True)
+                    st.write(f"**{produk_keranjang[i]}** + **{produk_keranjang[j]}** — "
+                             f"Confidence {hasil['confidence']*100:.1f}%, Lift {hasil['lift']:.2f}")
+                    if hasil["lift"] > 3:
+                        st.caption("Nilai lift tergolong kuat, pasangan ini layak ditawarkan sebagai paket bundling.")
+                    st.write("")
+        if not ditemukan_bundling:
+            st.caption("Belum ada pasangan produk di keranjang ini yang punya rule bundling resmi dari hasil Apriori.")
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 12 — HALAMAN: UPLOAD DATA (dulunya 6_Upload_Data.py)
 # ════════════════════════════════════════════════════════════════
 
 def halaman_upload_data():
@@ -1011,7 +1093,7 @@ def halaman_upload_data():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 11 — ROUTER: tampilkan halaman sesuai pilihan sidebar
+# BAGIAN 13 — ROUTER: tampilkan halaman sesuai pilihan sidebar
 # ════════════════════════════════════════════════════════════════
 
 ROUTER = {
@@ -1021,6 +1103,7 @@ ROUTER = {
     "Product Recommender": halaman_product_recommender,
     "Simulasi Bundling": halaman_simulasi_bundling,
     "Peta Korelasi": halaman_peta_korelasi,
+    "Kalkulator Keranjang": halaman_kalkulator_keranjang,
     "Upload Data": halaman_upload_data,
 }
 
