@@ -91,6 +91,15 @@ def apply_custom_theme():
         }}
 
         /* ── Tombol navigasi di sidebar (pengganti pages/) ── */
+        section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {{
+            gap: 0.35rem !important;
+        }}
+        section[data-testid="stSidebar"] .element-container {{
+            margin-bottom: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .stButton {{
+            margin-bottom: 0 !important;
+        }}
         section[data-testid="stSidebar"] .stButton>button {{
             background-color: rgba(255,255,255,0.08) !important;
             color: white !important;
@@ -100,7 +109,7 @@ def apply_custom_theme():
             justify-content: flex-start !important;
             font-weight: 500 !important;
             padding: 10px 14px !important;
-            margin-bottom: 4px !important;
+            margin: 0 !important;
             box-shadow: none !important;
             width: 100%;
         }}
