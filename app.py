@@ -90,16 +90,37 @@ def apply_custom_theme():
             background-color: rgba(255,255,255,0.15);
         }}
 
-        /* ── Radio nav di sidebar (pengganti pages/) ── */
-        section[data-testid="stSidebar"] [role="radiogroup"] label {{
-            background-color: rgba(255,255,255,0.08);
-            border-radius: 8px;
-            padding: 8px 10px;
-            margin-bottom: 4px;
-            transition: background-color 0.15s ease;
+        /* ── Tombol navigasi di sidebar (pengganti pages/) ── */
+        section[data-testid="stSidebar"] .stButton>button {{
+            background-color: rgba(255,255,255,0.08) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 8px !important;
+            text-align: left !important;
+            justify-content: flex-start !important;
+            font-weight: 500 !important;
+            padding: 10px 14px !important;
+            margin-bottom: 4px !important;
+            box-shadow: none !important;
+            width: 100%;
         }}
-        section[data-testid="stSidebar"] [role="radiogroup"] label:hover {{
-            background-color: rgba(255,255,255,0.2);
+        section[data-testid="stSidebar"] .stButton>button:hover {{
+            background-color: rgba(255,255,255,0.22) !important;
+            transform: none !important;
+            box-shadow: none !important;
+        }}
+        section[data-testid="stSidebar"] .stButton>button p {{
+            font-weight: 500 !important;
+        }}
+        /* Menu yang sedang aktif */
+        section[data-testid="stSidebar"] .nav-aktif .stButton>button {{
+            background-color: white !important;
+            color: {MERAH_UTAMA} !important;
+            font-weight: 700 !important;
+        }}
+        section[data-testid="stSidebar"] .nav-aktif .stButton>button p {{
+            color: {MERAH_UTAMA} !important;
+            font-weight: 700 !important;
         }}
 
         /* ── Tombol ── */
@@ -655,6 +676,9 @@ MENU = [
     "Upload Data",
 ]
 
+if "halaman_aktif" not in st.session_state:
+    st.session_state.halaman_aktif = MENU[0]
+
 with st.sidebar:
     st.markdown(
         """
@@ -667,7 +691,16 @@ with st.sidebar:
         """,
         unsafe_allow_html=True
     )
-    halaman = st.radio("Navigasi", MENU, label_visibility="collapsed")
+    for item in MENU:
+        aktif = (item == st.session_state.halaman_aktif)
+        wrapper_class = "nav-aktif" if aktif else "nav-nonaktif"
+        st.markdown(f'<div class="{wrapper_class}">', unsafe_allow_html=True)
+        if st.button(item, key=f"nav_{item}", use_container_width=True):
+            st.session_state.halaman_aktif = item
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+halaman = st.session_state.halaman_aktif
 
 
 # ════════════════════════════════════════════════════════════════
