@@ -483,16 +483,19 @@ def page_header(judul: str, subjudul: str = ""):
     )
 
 
+
 # ════════════════════════════════════════════════════════════════
 # BAGIAN 2 — PIPELINE DATA (dulunya pipeline.py)
 # ════════════════════════════════════════════════════════════════
 
-# PERBAIKAN: DATA_PATH dulunya "/content/Dashboard_streamlit.xlsx" (path
-# khusus Google Colab). Diubah jadi path relatif terhadap lokasi app.py
-# supaya jalan di Streamlit Cloud maupun lokal.
 DATA_PATH = os.path.join(os.path.dirname(__file__), "Dashboard_streamlit.xlsx")
 FEATS = ['Recency', 'Frequency', 'Monetary', 'Total_QTY', 'Avg_Disc']
 MIN_SUPPORT, MIN_CONFIDENCE, MIN_LIFT = 0.02, 0.30, 1.2
+KOLOM_MENTAH_ASLI = ['NO_INVOICE','TANGGAL','NO_CUSTOMER','NAMA_CUSTOMER',
+                     'ALAMAT','SALESMAN','ITEM','QTY','UNIT',
+                     'HARGA_LIST','DISKON_PCT','DISKON_ITEM','HARGA_JUAL']
+KOLOM_WAJIB = ['NO_INVOICE', 'TANGGAL', 'NO_CUSTOMER', 'NAMA_CUSTOMER',
+               'ITEM', 'QTY', 'HARGA_JUAL', 'DISKON_PCT']
 
 
 @st.cache_data
@@ -600,24 +603,75 @@ def hitung_matriks_korelasi(transaksi_df, top_n=15):
     return corr, top_items
 
 
+def baca_berkas_upload(berkas):
+    """
+    Membaca berkas upload dengan deteksi otomatis format:
+    1. Coba baca normal (header di baris pertama, kolom sudah rapi)
+    2. Kalau kolom wajib tidak lengkap, coba baca ulang sebagai data mentah asli
+       (header=4, lalu rename ke 13 kolom baku)
+    Mengembalikan (df, keterangan_format) atau (None, pesan_error)
+    """
+    try:
+        df_coba1 = pd.read_excel(berkas)
+        kolom_hilang_1 = [k for k in KOLOM_WAJIB if k not in df_coba1.columns]
+        if not kolom_hilang_1:
+            return df_coba1, "rapi"
+    except Exception:
+        pass
+
+    try:
+        berkas.seek(0)
+        df_coba2 = pd.read_excel(berkas, header=4)
+        if df_coba2.shape[1] == len(KOLOM_MENTAH_ASLI):
+            df_coba2.columns = KOLOM_MENTAH_ASLI
+            kolom_hilang_2 = [k for k in KOLOM_WAJIB if k not in df_coba2.columns]
+            if not kolom_hilang_2:
+                return df_coba2, "mentah_asli"
+    except Exception:
+        pass
+
+    return None, "tidak_dikenali"
+
+
 def jalankan_pipeline_baru(df_upload):
     df = df_upload.copy()
-    kolom_wajib = ['NO_INVOICE', 'TANGGAL', 'NO_CUSTOMER', 'NAMA_CUSTOMER',
-                   'ITEM', 'QTY', 'HARGA_JUAL', 'DISKON_PCT']
-    kolom_hilang = [k for k in kolom_wajib if k not in df.columns]
+    n_awal = len(df)
+
+    kolom_hilang = [k for k in KOLOM_WAJIB if k not in df.columns]
     if kolom_hilang:
         return {"error": f"Kolom wajib tidak ditemukan: {', '.join(kolom_hilang)}"}
 
+    n_missing_dropped = df[['NO_INVOICE','ITEM','HARGA_JUAL']].isna().any(axis=1).sum()
     df = df.dropna(subset=['NO_INVOICE', 'ITEM', 'HARGA_JUAL'])
+    n_setelah_missing = len(df)
+
+    n_sebelum_dup = len(df)
     df = df.drop_duplicates(subset=['NO_INVOICE', 'ITEM', 'QTY', 'HARGA_JUAL'], keep='first')
+    n_dup_dropped = n_sebelum_dup - len(df)
+
     df['TANGGAL'] = pd.to_datetime(df['TANGGAL'], errors='coerce')
     for c in ['QTY', 'HARGA_JUAL', 'DISKON_PCT']:
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    n_sebelum_filter = len(df)
     df = df[(df['HARGA_JUAL'] > 0) & (df['QTY'] > 0)]
+    n_filter_dropped = n_sebelum_filter - len(df)
+
     df['ITEM'] = df['ITEM'].astype(str).str.strip().str.upper()
+    if 'NAMA_CUSTOMER' in df.columns:
+        df['NAMA_CUSTOMER'] = df['NAMA_CUSTOMER'].astype(str).str.strip().str.upper()
+    df['BULAN'] = df['TANGGAL'].dt.to_period('M').astype(str)
+    df['HARI'] = df['TANGGAL'].dt.day
 
     if len(df) == 0:
         return {"error": "Setelah pembersihan, tidak ada baris data yang tersisa."}
+
+    funnel = pd.DataFrame({
+        'Tahap': ['Data mentah', 'Setelah hapus missing values',
+                  'Setelah hapus duplikat', 'Setelah filter QTY & harga tidak valid'],
+        'Jumlah Baris': [n_awal, n_setelah_missing, n_setelah_missing - n_dup_dropped, len(df)],
+        'Baris Terhapus': [0, n_missing_dropped, n_dup_dropped, n_filter_dropped]
+    })
 
     snapshot = df['TANGGAL'].max() + pd.Timedelta(days=1)
     rfm = df.groupby('ITEM').agg(
@@ -636,29 +690,68 @@ def jalankan_pipeline_baru(df_upload):
                               n_quantiles=min(100, len(rfm)))
     X_scaled = qt.fit_transform(rfm[FEATS])
 
+    for col, asc, lbl in [('Recency', True, [5,4,3,2,1]), ('Frequency', False, [1,2,3,4,5]),
+                           ('Monetary', False, [1,2,3,4,5])]:
+        rfm[f'{col[0]}_Score'] = pd.qcut(
+            rfm[col].rank(method='first', ascending=asc), q=5, labels=lbl, duplicates='drop').astype(int)
+    rfm['RFM_Score'] = rfm['R_Score'] + rfm['F_Score'] + rfm['M_Score']
+
+    def rfm_segment(s):
+        if s >= 13: return 'Champion'
+        if s >= 10: return 'High Performer'
+        if s >= 7: return 'Growing'
+        if s >= 4: return 'At Risk'
+        return 'Dormant'
+    rfm['Segment_RFM'] = rfm['RFM_Score'].apply(rfm_segment)
+
     k_opt = min(4, len(rfm) - 1)
-    kmeans = KMeans(n_clusters=k_opt, init='k-means++', random_state=42,
-                     n_init=10, max_iter=1000)
+    kmeans = KMeans(n_clusters=k_opt, init='k-means++', random_state=42, n_init=10, max_iter=1000)
     rfm['Cluster'] = kmeans.fit_predict(X_scaled)
     sil = silhouette_score(X_scaled, rfm['Cluster']) if len(rfm) > k_opt else None
 
+    prof = rfm.groupby('Cluster')[FEATS].mean()
+    prof['score'] = prof['Monetary'].rank() + prof['Frequency'].rank() + prof['Recency'].rank(ascending=False)
+    ranks = prof['score'].rank(ascending=False).astype(int).to_dict()
+    lbl_map = {1: 'Produk Champion', 2: 'Produk Aktif', 3: 'Produk Potensial', 4: 'Produk Tidur'}
+    rfm['Segment_Cluster'] = rfm['Cluster'].map({c: lbl_map.get(r, f'Cluster {r}') for c, r in ranks.items()})
+
+    rfm['Zscore_Monetary'] = rfm.groupby('Cluster')['Monetary'].transform(
+        lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) > 0 else 0)
+    rfm['Is_Outlier'] = rfm['Zscore_Monetary'].abs() > 2
+
     basket = (df.groupby(['NO_INVOICE', 'ITEM'])['QTY']
-                .sum().unstack(fill_value=0).astype(bool))
-    frequent_itemsets = apriori(basket, min_support=MIN_SUPPORT,
-                                 use_colnames=True, max_len=3)
+              .sum().unstack(fill_value=0).astype(bool))
+    frequent_itemsets = apriori(basket, min_support=MIN_SUPPORT, use_colnames=True, max_len=3)
     rules = pd.DataFrame()
     if not frequent_itemsets.empty:
-        rules_all = association_rules(frequent_itemsets, metric='lift',
-                                       min_threshold=MIN_LIFT)
-        rules = rules_all[rules_all['confidence'] >= MIN_CONFIDENCE]
-        rules = rules.sort_values('lift', ascending=False)
+        rules_all = association_rules(frequent_itemsets, metric='lift', min_threshold=MIN_LIFT)
+        rules = rules_all[rules_all['confidence'] >= MIN_CONFIDENCE].sort_values('lift', ascending=False)
+
+    def kategori_periode(hari):
+        return 'Periode Gajian (25-5)' if (hari >= 25 or hari <= 5) else 'Periode Normal (6-24)'
+    df['PERIODE_GAJIAN'] = df['HARI'].apply(kategori_periode)
+    tren_gajian = df.groupby('PERIODE_GAJIAN')['HARGA_JUAL'].sum().reset_index()
+
+    bulanan = df.groupby('BULAN')['HARGA_JUAL'].sum()
+    insight = {
+        "bulan_terbaik": bulanan.idxmax() if not bulanan.empty else "-",
+        "bulan_terendah": bulanan.idxmin() if not bulanan.empty else "-",
+        "champion_count": int((rfm['Segment_RFM'] == 'Champion').sum()),
+        "tidur_count": int((rfm['Segment_Cluster'] == 'Produk Tidur').sum()),
+        "outlier_count": int(rfm['Is_Outlier'].sum()),
+        "top_produk": rfm.sort_values('Monetary', ascending=False).iloc[0]['ITEM'] if len(rfm) else "-",
+    }
 
     return {
-        "error": None, "jumlah_baris": len(df),
+        "error": None,
+        "funnel": funnel,
+        "jumlah_baris": len(df),
         "jumlah_produk": rfm['ITEM'].nunique(),
         "jumlah_invoice": df['NO_INVOICE'].nunique(),
         "rfm": rfm, "k_optimal": k_opt, "silhouette": sil,
-        "jumlah_rules": len(rules), "rules": rules
+        "jumlah_rules": len(rules), "rules": rules,
+        "tren_gajian": tren_gajian, "insight": insight,
+        "df_bersih": df,
     }
 
 
@@ -713,8 +806,9 @@ with st.sidebar:
 halaman = st.session_state.halaman_aktif
 
 
+
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 4 — HALAMAN: RINGKASAN (dulunya app.py + 1_Ringkasan.py)
+# BAGIAN 4 — HALAMAN: RINGKASAN
 # ════════════════════════════════════════════════════════════════
 
 def halaman_ringkasan():
@@ -752,7 +846,6 @@ def halaman_ringkasan():
         kartu_insight(f"<b>{champion_count} produk Champion</b> (RFM) dan <b>{tidur_count} produk Tidur</b> (K-Means) perlu perhatian khusus", ikon="flag")
 
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
-
     st.title("Ringkasan Penjualan")
 
     col_left, col_right = st.columns([1.4, 1])
@@ -776,21 +869,134 @@ def halaman_ringkasan():
         st.subheader("Profil Klaster")
         st.dataframe(data["cluster_profile"][["Segment_Cluster", "Jumlah_Produk", "Monetary"]], use_container_width=True, hide_index=True)
 
+    # ── FITUR: Tren Penjualan per Tanggal (dengan pilihan bulan) ──
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.subheader("Tren Penjualan per Tanggal")
+    st.caption("Pilih tampilan gabungan seluruh bulan, atau pilih satu bulan tertentu untuk melihat pola tanggalnya secara spesifik.")
+
+    transaksi_periode = transaksi.copy()
+    transaksi_periode['TANGGAL'] = pd.to_datetime(transaksi_periode['TANGGAL'])
+    transaksi_periode['HARI'] = transaksi_periode['TANGGAL'].dt.day
+    transaksi_periode['BULAN_NAMA'] = transaksi_periode['TANGGAL'].dt.strftime('%B %Y')
+
+    daftar_bulan = ["Semua Bulan (Gabungan)"] + sorted(
+        transaksi_periode['BULAN_NAMA'].unique().tolist(),
+        key=lambda x: pd.to_datetime(x, format='%B %Y')
+    )
+    bulan_terpilih = st.selectbox("Pilih tampilan", daftar_bulan)
+
+    if bulan_terpilih == "Semua Bulan (Gabungan)":
+        data_tanggal = transaksi_periode
+        keterangan = "gabungan seluruh bulan (rata-rata per tanggal)"
+    else:
+        data_tanggal = transaksi_periode[transaksi_periode['BULAN_NAMA'] == bulan_terpilih]
+        keterangan = f"bulan {bulan_terpilih} saja"
+
+    tren_tanggal = data_tanggal.groupby('HARI').agg(
+        Total_Revenue=('HARGA_JUAL', 'sum'),
+        Jumlah_Transaksi=('NO_INVOICE', 'nunique')
+    ).reset_index()
+
+    if bulan_terpilih == "Semua Bulan (Gabungan)":
+        jumlah_kemunculan = data_tanggal.groupby('HARI')['TANGGAL'].apply(lambda x: x.dt.to_period('M').nunique()).reset_index()
+        jumlah_kemunculan.columns = ['HARI', 'Jumlah_Bulan_Muncul']
+        tren_tanggal = tren_tanggal.merge(jumlah_kemunculan, on='HARI')
+        tren_tanggal['Nilai_Tampil'] = tren_tanggal['Total_Revenue'] / tren_tanggal['Jumlah_Bulan_Muncul']
+        label_sumbu_y = "Rata-rata Revenue"
+    else:
+        tren_tanggal['Nilai_Tampil'] = tren_tanggal['Total_Revenue']
+        label_sumbu_y = "Revenue"
+
+    fig_tanggal = px.line(tren_tanggal, x='HARI', y='Nilai_Tampil', markers=True,
+                           color_discrete_sequence=["#B91C1C"],
+                           labels={'HARI': 'Tanggal', 'Nilai_Tampil': label_sumbu_y})
+    fig_tanggal.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+    st.plotly_chart(fig_tanggal, use_container_width=True)
+
+    if st.button("Deteksi Tanggal Menonjol", type="primary"):
+        rata_keseluruhan = tren_tanggal['Nilai_Tampil'].mean()
+        std_keseluruhan = tren_tanggal['Nilai_Tampil'].std()
+
+        tanggal_puncak = tren_tanggal[tren_tanggal['Nilai_Tampil'] > rata_keseluruhan + std_keseluruhan].sort_values('Nilai_Tampil', ascending=False)
+        tanggal_lembah = tren_tanggal[tren_tanggal['Nilai_Tampil'] < rata_keseluruhan - std_keseluruhan].sort_values('Nilai_Tampil')
+
+        col_p, col_l = st.columns(2)
+        with col_p:
+            st.markdown("**Tanggal dengan penjualan menonjol tinggi**")
+            if not tanggal_puncak.empty:
+                for _, row in tanggal_puncak.head(5).iterrows():
+                    st.markdown(f"- Tanggal **{int(row['HARI'])}** — Rp {row['Nilai_Tampil']/1e6:,.1f} Jt")
+            else:
+                st.caption("Tidak ada tanggal yang menonjol signifikan secara statistik.")
+
+        with col_l:
+            st.markdown("**Tanggal dengan penjualan menonjol rendah**")
+            if not tanggal_lembah.empty:
+                for _, row in tanggal_lembah.head(5).iterrows():
+                    st.markdown(f"- Tanggal **{int(row['HARI'])}** — Rp {row['Nilai_Tampil']/1e6:,.1f} Jt")
+            else:
+                st.caption("Tidak ada tanggal yang menonjol signifikan secara statistik.")
+
+        if not tanggal_puncak.empty:
+            daftar_tanggal_puncak = ", ".join(str(int(h)) for h in tanggal_puncak['HARI'].head(5))
+            st.success(
+                f"Berdasarkan data {keterangan}, tanggal **{daftar_tanggal_puncak}** menunjukkan "
+                f"penjualan lebih tinggi dari rata-rata. Disarankan memastikan ketersediaan stok "
+                f"produk terlaris menjelang tanggal-tanggal tersebut."
+            )
+        else:
+            st.info(f"Tidak ditemukan tanggal dengan pola penjualan menonjol secara statistik pada {keterangan}.")
+
+    # ── FITUR: Periode Gajian vs Normal (dengan tombol) ──
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.subheader("Insight: Periode Gajian vs Normal")
+    st.caption("Klik tombol di bawah untuk membandingkan rata-rata revenue per hari pada periode gajian (tanggal 25-31 dan 1-5) dengan periode normal (tanggal 6-24).")
+
+    if st.button("Tampilkan Perbandingan Periode Gajian", type="primary"):
+        def kategori_periode(hari):
+            return "Periode Gajian (25-5)" if (hari >= 25 or hari <= 5) else "Periode Normal (6-24)"
+
+        transaksi_periode['PERIODE_GAJIAN'] = transaksi_periode['HARI'].apply(kategori_periode)
+
+        jumlah_hari = {"Periode Gajian (25-5)": 11, "Periode Normal (6-24)": 19}
+        tg = transaksi_periode.groupby('PERIODE_GAJIAN')['HARGA_JUAL'].sum().reset_index()
+        tg['Rata2_Revenue_per_Hari'] = tg.apply(lambda r: r['HARGA_JUAL'] / jumlah_hari[r['PERIODE_GAJIAN']], axis=1)
+
+        gajian_row = tg[tg['PERIODE_GAJIAN'].str.contains('Gajian')]
+        normal_row = tg[tg['PERIODE_GAJIAN'].str.contains('Normal')]
+
+        c1, c2 = st.columns(2)
+        if not gajian_row.empty:
+            c1.metric("Revenue/hari — Periode Gajian", f"Rp {gajian_row['Rata2_Revenue_per_Hari'].values[0]/1e6:,.1f} Jt")
+        if not normal_row.empty:
+            c2.metric("Revenue/hari — Periode Normal", f"Rp {normal_row['Rata2_Revenue_per_Hari'].values[0]/1e6:,.1f} Jt")
+
+        if not gajian_row.empty and not normal_row.empty:
+            selisih_persen = ((gajian_row['Rata2_Revenue_per_Hari'].values[0] - normal_row['Rata2_Revenue_per_Hari'].values[0])
+                               / normal_row['Rata2_Revenue_per_Hari'].values[0]) * 100
+            if selisih_persen > 5:
+                st.success(f"Rata-rata revenue harian pada periode gajian **{selisih_persen:.1f}% lebih tinggi** dibanding periode normal. Disarankan menambah stok produk terlaris menjelang tanggal 25 tiap bulan.")
+            elif selisih_persen < -5:
+                st.info(f"Rata-rata revenue harian pada periode gajian **{abs(selisih_persen):.1f}% lebih rendah** dibanding periode normal.")
+            else:
+                st.info("Tidak ditemukan perbedaan pola penjualan yang signifikan antara periode gajian dan normal.")
+
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 5 — HALAMAN: SEGMENTASI (dulunya 2_Segmentasi.py)
+# BAGIAN 5 — HALAMAN: SEGMENTASI
 # ════════════════════════════════════════════════════════════════
 
 def halaman_segmentasi():
     render_brand_header()
     st.title("Segmentasi Produk - RFM dan K-Means")
     data = load_data()
+    rfm = data["rfm"]
 
     st.subheader("Sebaran Produk per Klaster")
     fig = px.scatter(
-        data["rfm"], x="Frequency", y="Monetary", color="Segment_Cluster",
+        rfm, x="Frequency", y="Monetary", color="Segment_Cluster",
         size="Total_QTY", hover_name="ITEM",
-        color_discrete_sequence=["#B91C1C", "#EF4444", "#F87171", "#94A3B8"]
+        color_discrete_sequence=["#B91C1C", "#2563EB", "#16A34A", "#94A3B8"]
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -801,9 +1007,44 @@ def halaman_segmentasi():
     st.subheader("Detail Profil Klaster")
     st.dataframe(data["cluster_profile"], use_container_width=True)
 
+    # ── FITUR: Deteksi dan Penjelasan Outlier ──
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.markdown("### Catatan Interpretasi: Produk dengan Karakteristik Ekstrem")
+    st.caption("Beberapa produk memiliki nilai Monetary yang jauh berbeda dari mayoritas produk lain di segmennya, sehingga dapat memengaruhi nilai rata-rata pada analisis segmen di atas.")
+
+    outlier_list = []
+    for segmen in rfm['Segment_RFM'].unique():
+        subset = rfm[rfm['Segment_RFM'] == segmen]
+        if len(subset) > 2:
+            median_segmen = subset['Monetary'].median()
+            mean_segmen = subset['Monetary'].mean()
+            outliers = subset[subset['Monetary'] > median_segmen * 2]
+            for _, row in outliers.iterrows():
+                outlier_list.append({
+                    'Produk': row['ITEM'],
+                    'Segmen RFM': segmen,
+                    'Monetary Produk (Rp)': f"{row['Monetary']:,.0f}",
+                    'Median Segmen (Rp)': f"{median_segmen:,.0f}",
+                    'Rata-rata Segmen (Rp)': f"{mean_segmen:,.0f}",
+                    'Selisih dari Median': f"{row['Monetary'] / median_segmen:.1f}x"
+                })
+
+    if outlier_list:
+        outlier_df = pd.DataFrame(outlier_list)
+        st.dataframe(outlier_df, use_container_width=True, hide_index=True)
+        st.info(
+            "Produk-produk pada tabel di atas memiliki nilai Monetary lebih dari dua kali lipat "
+            "median segmennya. Hal ini konsisten dengan sifat data transaksi yang cenderung menceng "
+            "(skewed), sehingga nilai rata-rata (mean) pada grafik 'Rata-rata Monetary per Segmen' "
+            "perlu dibaca bersamaan dengan median untuk menghindari kesalahan interpretasi bahwa "
+            "seluruh produk pada segmen tersebut bernilai tinggi."
+        )
+    else:
+        st.success("Tidak ditemukan produk dengan nilai ekstrem yang signifikan pada segmen mana pun.")
+
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 6 — HALAMAN: POLA BELI (dulunya 3_Pola_Beli.py)
+# BAGIAN 6 — HALAMAN: POLA BELI
 # ════════════════════════════════════════════════════════════════
 
 def halaman_pola_beli():
@@ -830,7 +1071,7 @@ def halaman_pola_beli():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 7 — HALAMAN: PRODUCT RECOMMENDER (dulunya 4_Product_Recommender.py)
+# BAGIAN 7 — HALAMAN: PRODUCT RECOMMENDER
 # ════════════════════════════════════════════════════════════════
 
 def halaman_product_recommender():
@@ -877,7 +1118,7 @@ def halaman_product_recommender():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 8 — HALAMAN: SIMULASI BUNDLING (dulunya 5_Simulasi_Bundling.py)
+# BAGIAN 8 — HALAMAN: SIMULASI BUNDLING
 # ════════════════════════════════════════════════════════════════
 
 def halaman_simulasi_bundling():
@@ -909,7 +1150,7 @@ def halaman_simulasi_bundling():
                     st.caption("Nilai lift tergolong kuat, layak dipertimbangkan sebagai bundling.")
 
             elif hasil["status"] == "dihitung_langsung":
-                st.markdown('<span class="badge-warn">Dihitung langsung dari data (di luar 210 rules resmi)</span>', unsafe_allow_html=True)
+                st.markdown('<span class="badge-warn">Dihitung langsung dari data (di luar rules resmi)</span>', unsafe_allow_html=True)
                 st.write("")
                 st.caption("Pasangan ini di bawah ambang batas support/confidence yang dipakai saat mining Apriori, tapi tetap pernah dibeli bersama.")
                 c1, c2, c3 = st.columns(3)
@@ -924,11 +1165,11 @@ def halaman_simulasi_bundling():
             else:
                 st.markdown('<span class="badge-warn">Tidak pernah dibeli bersama</span>', unsafe_allow_html=True)
                 st.write("")
-                st.caption(f"{produk_a} dan {produk_b} tidak pernah muncul dalam invoice yang sama sepanjang tahun 2025.")
+                st.caption(f"{produk_a} dan {produk_b} tidak pernah muncul dalam invoice yang sama sepanjang periode data.")
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 9 — HALAMAN: PETA KORELASI (dulunya 7_Peta_Korelasi.py)
+# BAGIAN 9 — HALAMAN: PETA KORELASI
 # ════════════════════════════════════════════════════════════════
 
 def halaman_peta_korelasi():
@@ -965,7 +1206,7 @@ def halaman_peta_korelasi():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 10 — HALAMAN: KALKULATOR KERANJANG (dulunya 8_Kalkulator_Keranjang.py)
+# BAGIAN 10 — HALAMAN: KALKULATOR KERANJANG
 # ════════════════════════════════════════════════════════════════
 
 def halaman_kalkulator_keranjang():
@@ -1012,54 +1253,96 @@ def halaman_kalkulator_keranjang():
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 12 — HALAMAN: UPLOAD DATA (dulunya 6_Upload_Data.py)
+# BAGIAN 11 — HALAMAN: UPLOAD DATA
 # ════════════════════════════════════════════════════════════════
 
 def halaman_upload_data():
     render_brand_header()
     st.title("Upload Data Transaksi Baru")
-    st.caption("Unggah berkas Excel transaksi terbaru untuk menjalankan ulang analisis RFM, K-Means, dan Apriori. Kolom wajib: NO_INVOICE, TANGGAL, NO_CUSTOMER, NAMA_CUSTOMER, ITEM, QTY, HARGA_JUAL, DISKON_PCT.")
+    st.caption("Unggah berkas Excel transaksi terbaru untuk menjalankan ulang analisis RFM, K-Means, dan Apriori secara otomatis. Sistem dapat membaca dua format berkas: data yang sudah rapi (kolom sudah bernama sesuai standar) maupun data mentah asli seperti berkas ekspor sistem penjualan (dengan baris judul/logo di bagian atas).")
 
     berkas = st.file_uploader("Pilih berkas Excel (.xlsx)", type=["xlsx"])
 
     if berkas is not None:
         try:
-            df_upload = pd.read_excel(berkas)
-            st.write("Pratinjau data:")
-            st.dataframe(df_upload.head(10), use_container_width=True)
+            df_upload, format_terdeteksi = baca_berkas_upload(berkas)
 
-            if st.button("Jalankan Analisis"):
-                with st.spinner("Menjalankan pipeline analisis..."):
-                    hasil = jalankan_pipeline_baru(df_upload)
-
-                if hasil.get("error"):
-                    st.error(hasil['error'])
+            if df_upload is None:
+                st.error(
+                    "Format berkas tidak dikenali. Pastikan berkas memiliki kolom "
+                    "NO_INVOICE, TANGGAL, NO_CUSTOMER, NAMA_CUSTOMER, ITEM, QTY, "
+                    "HARGA_JUAL, DISKON_PCT, baik pada baris pertama maupun setelah "
+                    "4 baris judul (format ekspor sistem penjualan)."
+                )
+            else:
+                if format_terdeteksi == "mentah_asli":
+                    st.success("Format terdeteksi: data mentah asli (berkas ekspor sistem penjualan). Kolom otomatis disesuaikan.")
                 else:
-                    st.success("Analisis berhasil dijalankan.")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Baris Bersih", f"{hasil['jumlah_baris']:,}".replace(",", "."))
-                    c2.metric("Produk Unik", hasil["jumlah_produk"])
-                    c3.metric("Invoice Unik", f"{hasil['jumlah_invoice']:,}".replace(",", "."))
-                    c4.metric("K Optimal", hasil["k_optimal"])
+                    st.success("Format terdeteksi: data sudah rapi, siap dianalisis.")
 
-                    tab1, tab2 = st.tabs(["Hasil RFM dan Clustering", "Association Rules"])
-                    with tab1:
-                        st.dataframe(hasil["rfm"], use_container_width=True)
-                        csv_rfm = hasil["rfm"].to_csv(index=False).encode("utf-8")
-                        st.download_button("Unduh Hasil RFM (CSV)", csv_rfm, "hasil_rfm_baru.csv", "text/csv")
-                    with tab2:
-                        st.metric("Jumlah Rules", hasil["jumlah_rules"])
-                        if not hasil["rules"].empty:
-                            rd = hasil["rules"].copy()
-                            rd["antecedents"] = rd["antecedents"].apply(lambda s: ", ".join(sorted(s)))
-                            rd["consequents"] = rd["consequents"].apply(lambda s: ", ".join(sorted(s)))
-                            st.dataframe(rd[["antecedents", "consequents", "support", "confidence", "lift"]], use_container_width=True)
+                st.write("Pratinjau data:")
+                st.dataframe(df_upload.head(10), use_container_width=True)
+
+                if st.button("Jalankan Analisis"):
+                    with st.spinner("Menjalankan pipeline analisis: pembersihan data, RFM, K-Means, dan Apriori..."):
+                        hasil = jalankan_pipeline_baru(df_upload)
+
+                    if hasil.get("error"):
+                        st.error(hasil['error'])
+                    else:
+                        st.success("Analisis berhasil dijalankan.")
+
+                        st.markdown("#### Funnel Pembersihan Data")
+                        st.dataframe(hasil["funnel"], use_container_width=True, hide_index=True)
+
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Baris Bersih", f"{hasil['jumlah_baris']:,}".replace(",", "."))
+                        c2.metric("Produk Unik", hasil["jumlah_produk"])
+                        c3.metric("Invoice Unik", f"{hasil['jumlah_invoice']:,}".replace(",", "."))
+                        c4.metric("K Optimal", hasil["k_optimal"])
+
+                        st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+                        st.markdown("#### Insight Otomatis dari Data Ini")
+                        ins = hasil["insight"]
+                        ic1, ic2 = st.columns(2)
+                        with ic1:
+                            st.info(f"📈 Bulan penjualan tertinggi: **{ins['bulan_terbaik']}**")
+                            st.info(f"🏆 Produk dengan omzet tertinggi: **{ins['top_produk']}**")
+                        with ic2:
+                            st.info(f"📉 Bulan penjualan terendah: **{ins['bulan_terendah']}**")
+                            st.warning(f"🚩 **{ins['champion_count']} produk Champion**, "
+                                       f"**{ins['tidur_count']} produk Tidur**, "
+                                       f"**{ins['outlier_count']} outlier** terdeteksi")
+
+                        tab1, tab2, tab3 = st.tabs(["Hasil RFM & Clustering", "Association Rules", "Data Bersih"])
+
+                        with tab1:
+                            st.dataframe(hasil["rfm"], use_container_width=True)
+                            csv_rfm = hasil["rfm"].to_csv(index=False).encode("utf-8")
+                            st.download_button("Unduh Hasil RFM (CSV)", csv_rfm, "hasil_rfm_baru.csv", "text/csv")
+
+                        with tab2:
+                            st.metric("Jumlah Rules", hasil["jumlah_rules"])
+                            if not hasil["rules"].empty:
+                                rd = hasil["rules"].copy()
+                                rd["antecedents"] = rd["antecedents"].apply(lambda s: ", ".join(sorted(s)))
+                                rd["consequents"] = rd["consequents"].apply(lambda s: ", ".join(sorted(s)))
+                                st.dataframe(rd[["antecedents", "consequents", "support", "confidence", "lift"]],
+                                             use_container_width=True)
+
+                        with tab3:
+                            st.caption("Data setelah preprocessing (hapus missing, duplikat, filter QTY/harga tidak valid).")
+                            st.dataframe(hasil["df_bersih"], use_container_width=True)
+                            csv_bersih = hasil["df_bersih"].to_csv(index=False).encode("utf-8")
+                            st.download_button("Unduh Data Bersih (CSV)", csv_bersih, "data_bersih.csv", "text/csv")
         except Exception as e:
             st.error(f"Gagal membaca berkas: {e}")
+    else:
+        st.info("Silakan unggah berkas Excel untuk memulai analisis.")
 
 
 # ════════════════════════════════════════════════════════════════
-# BAGIAN 13 — ROUTER: tampilkan halaman sesuai pilihan sidebar
+# BAGIAN 12 — ROUTER: tampilkan halaman sesuai pilihan sidebar
 # ════════════════════════════════════════════════════════════════
 
 ROUTER = {
