@@ -732,6 +732,17 @@ def jalankan_pipeline_baru(df_upload):
     df['PERIODE_GAJIAN'] = df['HARI'].apply(kategori_periode)
     tren_gajian = df.groupby('PERIODE_GAJIAN')['HARGA_JUAL'].sum().reset_index()
 
+    # Tren bulanan (dipakai untuk grafik tren, sama seperti sheet Tren_Bulanan di data tetap)
+    tren_bulanan = df.groupby('BULAN')['HARGA_JUAL'].sum().reset_index().rename(
+        columns={'BULAN': 'Bulan', 'HARGA_JUAL': 'Revenue'})
+
+    # Rapikan rules jadi format teks (sama seperti hasil load_data() dari Excel)
+    rapi = lambda s: ', '.join(sorted(s))
+    rules_rapi = rules.copy()
+    if not rules_rapi.empty:
+        rules_rapi['antecedents'] = rules_rapi['antecedents'].apply(rapi)
+        rules_rapi['consequents'] = rules_rapi['consequents'].apply(rapi)
+
     bulanan = df.groupby('BULAN')['HARGA_JUAL'].sum()
     insight = {
         "bulan_terbaik": bulanan.idxmax() if not bulanan.empty else "-",
@@ -749,10 +760,11 @@ def jalankan_pipeline_baru(df_upload):
         "jumlah_produk": rfm['ITEM'].nunique(),
         "jumlah_invoice": df['NO_INVOICE'].nunique(),
         "rfm": rfm, "k_optimal": k_opt, "silhouette": sil,
-        "jumlah_rules": len(rules), "rules": rules,
-        "tren_gajian": tren_gajian, "insight": insight,
+        "jumlah_rules": len(rules), "rules": rules, "rules_rapi": rules_rapi,
+        "tren_gajian": tren_gajian, "tren_bulanan": tren_bulanan, "insight": insight,
         "df_bersih": df,
     }
+
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1286,59 +1298,259 @@ def halaman_upload_data():
                 if st.button("Jalankan Analisis"):
                     with st.spinner("Menjalankan pipeline analisis: pembersihan data, RFM, K-Means, dan Apriori..."):
                         hasil = jalankan_pipeline_baru(df_upload)
+                    # Simpan ke session_state supaya tidak hilang saat berinteraksi
+                    # dengan dropdown/tombol di tab-tab hasil analisis di bawah.
+                    st.session_state["hasil_upload"] = hasil
 
-                    if hasil.get("error"):
-                        st.error(hasil['error'])
-                    else:
-                        st.success("Analisis berhasil dijalankan.")
-
-                        st.markdown("#### Funnel Pembersihan Data")
-                        st.dataframe(hasil["funnel"], use_container_width=True, hide_index=True)
-
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Baris Bersih", f"{hasil['jumlah_baris']:,}".replace(",", "."))
-                        c2.metric("Produk Unik", hasil["jumlah_produk"])
-                        c3.metric("Invoice Unik", f"{hasil['jumlah_invoice']:,}".replace(",", "."))
-                        c4.metric("K Optimal", hasil["k_optimal"])
-
-                        st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
-                        st.markdown("#### Insight Otomatis dari Data Ini")
-                        ins = hasil["insight"]
-                        ic1, ic2 = st.columns(2)
-                        with ic1:
-                            st.info(f"📈 Bulan penjualan tertinggi: **{ins['bulan_terbaik']}**")
-                            st.info(f"🏆 Produk dengan omzet tertinggi: **{ins['top_produk']}**")
-                        with ic2:
-                            st.info(f"📉 Bulan penjualan terendah: **{ins['bulan_terendah']}**")
-                            st.warning(f"🚩 **{ins['champion_count']} produk Champion**, "
-                                       f"**{ins['tidur_count']} produk Tidur**, "
-                                       f"**{ins['outlier_count']} outlier** terdeteksi")
-
-                        tab1, tab2, tab3 = st.tabs(["Hasil RFM & Clustering", "Association Rules", "Data Bersih"])
-
-                        with tab1:
-                            st.dataframe(hasil["rfm"], use_container_width=True)
-                            csv_rfm = hasil["rfm"].to_csv(index=False).encode("utf-8")
-                            st.download_button("Unduh Hasil RFM (CSV)", csv_rfm, "hasil_rfm_baru.csv", "text/csv")
-
-                        with tab2:
-                            st.metric("Jumlah Rules", hasil["jumlah_rules"])
-                            if not hasil["rules"].empty:
-                                rd = hasil["rules"].copy()
-                                rd["antecedents"] = rd["antecedents"].apply(lambda s: ", ".join(sorted(s)))
-                                rd["consequents"] = rd["consequents"].apply(lambda s: ", ".join(sorted(s)))
-                                st.dataframe(rd[["antecedents", "consequents", "support", "confidence", "lift"]],
-                                             use_container_width=True)
-
-                        with tab3:
-                            st.caption("Data setelah preprocessing (hapus missing, duplikat, filter QTY/harga tidak valid).")
-                            st.dataframe(hasil["df_bersih"], use_container_width=True)
-                            csv_bersih = hasil["df_bersih"].to_csv(index=False).encode("utf-8")
-                            st.download_button("Unduh Data Bersih (CSV)", csv_bersih, "data_bersih.csv", "text/csv")
         except Exception as e:
             st.error(f"Gagal membaca berkas: {e}")
     else:
         st.info("Silakan unggah berkas Excel untuk memulai analisis.")
+
+    # ── Tampilkan hasil analisis (kalau sudah pernah dijalankan) ──
+    hasil = st.session_state.get("hasil_upload")
+    if hasil is None:
+        return
+
+    if hasil.get("error"):
+        st.error(hasil["error"])
+        return
+
+    st.success("Analisis berhasil dijalankan.")
+
+    st.markdown("#### Funnel Pembersihan Data")
+    st.dataframe(hasil["funnel"], use_container_width=True, hide_index=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Baris Bersih", f"{hasil['jumlah_baris']:,}".replace(",", "."))
+    c2.metric("Produk Unik", hasil["jumlah_produk"])
+    c3.metric("Invoice Unik", f"{hasil['jumlah_invoice']:,}".replace(",", "."))
+    c4.metric("K Optimal", hasil["k_optimal"])
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.markdown("#### Insight Otomatis dari Data Ini")
+    ins = hasil["insight"]
+    ic1, ic2 = st.columns(2)
+    with ic1:
+        st.info(f"📈 Bulan penjualan tertinggi: **{ins['bulan_terbaik']}**")
+        st.info(f"🏆 Produk dengan omzet tertinggi: **{ins['top_produk']}**")
+    with ic2:
+        st.info(f"📉 Bulan penjualan terendah: **{ins['bulan_terendah']}**")
+        st.warning(f"🚩 **{ins['champion_count']} produk Champion**, "
+                   f"**{ins['tidur_count']} produk Tidur**, "
+                   f"**{ins['outlier_count']} outlier** terdeteksi")
+
+    rfm_baru = hasil["rfm"]
+    rules_baru = hasil["rules"]
+    df_bersih = hasil["df_bersih"]
+    daftar_produk_baru = sorted(rfm_baru["ITEM"].unique())
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.markdown("### Eksplorasi Lengkap Hasil Analisis Data Baru")
+    st.caption("Semua fitur di bawah ini memakai hasil analisis dari data yang baru saja diunggah, bukan data historis lama.")
+
+    tab_ringkasan, tab_rfm, tab_rules, tab_recommender, tab_bundling, tab_korelasi, tab_kalkulator, tab_data = st.tabs([
+        "Ringkasan & Tren", "RFM & Clustering", "Association Rules",
+        "Product Recommender", "Simulasi Bundling", "Peta Korelasi",
+        "Kalkulator Keranjang", "Data Bersih"
+    ])
+
+    # ── TAB: Ringkasan & Tren ──
+    with tab_ringkasan:
+        st.subheader("Tren Revenue Bulanan (Data Baru)")
+        tren_bulanan = hasil["tren_bulanan"]
+        if not tren_bulanan.empty:
+            fig_tren = px.line(tren_bulanan, x="Bulan", y="Revenue", markers=True, color_discrete_sequence=["#B91C1C"])
+            st.plotly_chart(fig_tren, use_container_width=True)
+        else:
+            st.info("Data tidak cukup untuk menampilkan tren bulanan.")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("Distribusi Segmen RFM")
+            seg_count = rfm_baru["Segment_RFM"].value_counts().reset_index()
+            seg_count.columns = ["Segment_RFM", "Jumlah_Produk"]
+            fig_donat = px.pie(seg_count, names="Segment_RFM", values="Jumlah_Produk", hole=0.5, color_discrete_sequence=PALET_GRADASI)
+            st.plotly_chart(fig_donat, use_container_width=True)
+        with col_b:
+            st.subheader("Top 5 Produk berdasarkan Revenue")
+            top5_baru = df_bersih.groupby("ITEM")["HARGA_JUAL"].sum().nlargest(5).reset_index()
+            fig_bar = px.bar(top5_baru, x="HARGA_JUAL", y="ITEM", orientation="h", color_discrete_sequence=["#B91C1C"])
+            fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.subheader("Insight: Periode Gajian vs Normal")
+        tg = hasil["tren_gajian"]
+        if not tg.empty and len(tg) == 2:
+            st.dataframe(tg, use_container_width=True, hide_index=True)
+
+    # ── TAB: RFM & Clustering ──
+    with tab_rfm:
+        st.dataframe(rfm_baru, use_container_width=True)
+        csv_rfm = rfm_baru.to_csv(index=False).encode("utf-8")
+        st.download_button("Unduh Hasil RFM (CSV)", csv_rfm, "hasil_rfm_baru.csv", "text/csv", key="dl_rfm")
+
+        st.subheader("Sebaran Produk per Klaster")
+        fig_scatter = px.scatter(
+            rfm_baru, x="Frequency", y="Monetary", color="Segment_Cluster",
+            size="Total_QTY", hover_name="ITEM",
+            color_discrete_sequence=["#B91C1C", "#2563EB", "#16A34A", "#94A3B8"]
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # ── TAB: Association Rules ──
+    with tab_rules:
+        st.metric("Jumlah Rules", hasil["jumlah_rules"])
+        if not rules_baru.empty:
+            rd = hasil["rules_rapi"]
+            st.dataframe(rd[["antecedents", "consequents", "support", "confidence", "lift"]],
+                         use_container_width=True)
+        else:
+            st.info("Tidak ditemukan aturan asosiasi yang lolos ambang batas pada data ini.")
+
+    # ── TAB: Product Recommender ──
+    with tab_recommender:
+        st.caption("Pilih satu produk dari data baru untuk melihat profil dan rekomendasi bundling-nya.")
+        produk_terpilih_baru = st.selectbox("Pilih produk", daftar_produk_baru, key="produk_upload_recommender")
+
+        if produk_terpilih_baru:
+            info_produk = rfm_baru[rfm_baru["ITEM"] == produk_terpilih_baru]
+            if info_produk.empty:
+                st.warning("Produk tidak ditemukan.")
+            else:
+                info_produk = info_produk.iloc[0]
+                colr1, colr2, colr3, colr4 = st.columns(4)
+                colr1.metric("Segmen RFM", info_produk.get("Segment_RFM", "-"))
+                colr2.metric("Klaster K-Means", info_produk.get("Segment_Cluster", "-"))
+                colr3.metric("Recency (hari)", f"{info_produk.get('Recency', 0):.0f}")
+                colr4.metric("Frequency (kali)", f"{info_produk.get('Frequency', 0):.0f}")
+
+                st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+                tren_produk_baru = (df_bersih[df_bersih["ITEM"] == produk_terpilih_baru]
+                                     .groupby("BULAN")["HARGA_JUAL"].sum().reset_index())
+                if not tren_produk_baru.empty:
+                    st.subheader(f"Tren Penjualan - {produk_terpilih_baru}")
+                    fig_tp = px.line(tren_produk_baru, x="BULAN", y="HARGA_JUAL", markers=True, color_discrete_sequence=["#B91C1C"])
+                    st.plotly_chart(fig_tp, use_container_width=True)
+
+                st.subheader("Rekomendasi Bundling")
+                if rules_baru.empty:
+                    st.info("Belum ada aturan asosiasi pada data ini untuk dijadikan rekomendasi.")
+                else:
+                    rules_terkait = rules_baru[
+                        rules_baru["antecedents"].apply(lambda a: produk_terpilih_baru in a) |
+                        rules_baru["consequents"].apply(lambda c: produk_terpilih_baru in c)
+                    ].sort_values("lift", ascending=False).head(5)
+                    if rules_terkait.empty:
+                        st.info("Belum ditemukan pola pembelian bersama yang cukup kuat untuk produk ini.")
+                    else:
+                        rt = rules_terkait.copy()
+                        rt["antecedents"] = rt["antecedents"].apply(lambda s: ", ".join(sorted(s)))
+                        rt["consequents"] = rt["consequents"].apply(lambda s: ", ".join(sorted(s)))
+                        st.dataframe(rt[["antecedents", "consequents", "support", "confidence", "lift"]],
+                                     use_container_width=True, hide_index=True)
+
+    # ── TAB: Simulasi Bundling ──
+    with tab_bundling:
+        st.caption("Pilih dua produk dari data baru untuk melihat kekuatan asosiasinya.")
+        colb1, colb2 = st.columns(2)
+        produk_a_baru = colb1.selectbox("Produk pertama", daftar_produk_baru, key="upload_produk_a")
+        produk_b_baru = colb2.selectbox("Produk kedua", daftar_produk_baru, key="upload_produk_b",
+                                         index=1 if len(daftar_produk_baru) > 1 else 0)
+
+        if st.button("Simulasikan Bundling", key="upload_btn_bundling", type="primary"):
+            if produk_a_baru == produk_b_baru:
+                st.warning("Pilih dua produk yang berbeda.")
+            else:
+                match = rules_baru[
+                    (rules_baru["antecedents"].apply(lambda a: produk_a_baru in a) &
+                     rules_baru["consequents"].apply(lambda c: produk_b_baru in c))
+                    |
+                    (rules_baru["antecedents"].apply(lambda a: produk_b_baru in a) &
+                     rules_baru["consequents"].apply(lambda c: produk_a_baru in c))
+                ] if not rules_baru.empty else pd.DataFrame()
+
+                if not match.empty:
+                    best = match.sort_values("lift", ascending=False).iloc[0]
+                    st.markdown('<span class="badge-ok">Rule resmi Apriori</span>', unsafe_allow_html=True)
+                    cb1, cb2, cb3 = st.columns(3)
+                    cb1.metric("Support", f"{best['support']*100:.2f}%")
+                    cb2.metric("Confidence", f"{best['confidence']*100:.2f}%")
+                    cb3.metric("Lift", f"{best['lift']:.2f}")
+                else:
+                    inv_a = set(df_bersih.loc[df_bersih["ITEM"] == produk_a_baru, "NO_INVOICE"])
+                    inv_b = set(df_bersih.loc[df_bersih["ITEM"] == produk_b_baru, "NO_INVOICE"])
+                    total_inv = df_bersih["NO_INVOICE"].nunique()
+                    both = len(inv_a & inv_b)
+                    if both == 0:
+                        st.markdown('<span class="badge-warn">Tidak pernah dibeli bersama</span>', unsafe_allow_html=True)
+                        st.caption(f"{produk_a_baru} dan {produk_b_baru} tidak pernah muncul dalam invoice yang sama pada data ini.")
+                    else:
+                        supp_a = len(inv_a) / total_inv if total_inv else 0
+                        supp_b = len(inv_b) / total_inv if total_inv else 0
+                        support = both / total_inv if total_inv else 0
+                        conf_a_to_b = both / len(inv_a) if inv_a else 0
+                        lift = support / (supp_a * supp_b) if (supp_a > 0 and supp_b > 0) else 0
+                        st.markdown('<span class="badge-warn">Dihitung langsung dari data (di luar rules resmi)</span>', unsafe_allow_html=True)
+                        cb1, cb2, cb3 = st.columns(3)
+                        cb1.metric("Support", f"{support*100:.3f}%")
+                        cb2.metric("Confidence (A ke B)", f"{conf_a_to_b*100:.2f}%")
+                        cb3.metric("Lift", f"{lift:.2f}")
+
+    # ── TAB: Peta Korelasi ──
+    with tab_korelasi:
+        st.caption("Heatmap korelasi antar-produk terlaris pada data yang baru diunggah.")
+        top_n_baru = st.slider("Jumlah produk terlaris yang ditampilkan", 5, 30, 15, key="upload_top_n")
+
+        top_items_baru = df_bersih.groupby("ITEM")["QTY"].sum().nlargest(top_n_baru).index.tolist()
+        subset_baru = df_bersih[df_bersih["ITEM"].isin(top_items_baru)]
+        basket_baru = (subset_baru.groupby(["NO_INVOICE", "ITEM"])["QTY"]
+                        .sum().unstack(fill_value=0).astype(bool).astype(int))
+        basket_baru = basket_baru.reindex(columns=top_items_baru, fill_value=0)
+        corr_baru = basket_baru.corr()
+
+        if not corr_baru.empty:
+            fig_corr = px.imshow(
+                corr_baru, x=top_items_baru, y=top_items_baru,
+                color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
+                aspect="auto", labels=dict(color="Korelasi")
+            )
+            fig_corr.update_layout(height=600, xaxis_tickangle=-45)
+            st.plotly_chart(fig_corr, use_container_width=True)
+        else:
+            st.info("Data tidak cukup untuk menghitung korelasi.")
+
+    # ── TAB: Kalkulator Keranjang ──
+    with tab_kalkulator:
+        st.caption("Simulasikan isi keranjang dari produk-produk pada data yang baru diunggah.")
+        keranjang_baru = st.multiselect("Isi keranjang", daftar_produk_baru, key="upload_keranjang")
+
+        if keranjang_baru and not rules_baru.empty:
+            saran_baru = rules_baru[
+                rules_baru["antecedents"].apply(lambda a: any(p in a for p in keranjang_baru))
+                & ~rules_baru["consequents"].apply(lambda c: any(p in c for p in keranjang_baru))
+            ].copy()
+            saran_baru = saran_baru.sort_values("lift", ascending=False)
+
+            if saran_baru.empty:
+                st.warning("Belum ada saran produk tambahan untuk kombinasi keranjang ini.")
+            else:
+                sb = saran_baru[["antecedents", "consequents", "confidence", "lift"]].copy()
+                sb["antecedents"] = sb["antecedents"].apply(lambda s: ", ".join(sorted(s)))
+                sb["consequents"] = sb["consequents"].apply(lambda s: ", ".join(sorted(s)))
+                sb.columns = ["Karena keranjang cocok dengan", "Disarankan tambah", "Confidence", "Lift"]
+                st.dataframe(sb.head(15), use_container_width=True, hide_index=True)
+        elif keranjang_baru:
+            st.info("Tidak ada aturan asosiasi pada data ini untuk dijadikan saran.")
+        else:
+            st.info("Pilih minimal satu produk untuk mulai simulasi.")
+
+    # ── TAB: Data Bersih ──
+    with tab_data:
+        st.caption("Data setelah preprocessing (hapus missing, duplikat, filter QTY/harga tidak valid).")
+        st.dataframe(df_bersih, use_container_width=True)
+        csv_bersih = df_bersih.to_csv(index=False).encode("utf-8")
+        st.download_button("Unduh Data Bersih (CSV)", csv_bersih, "data_bersih.csv", "text/csv", key="dl_bersih")
 
 
 # ════════════════════════════════════════════════════════════════
