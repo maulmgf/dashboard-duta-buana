@@ -35,8 +35,9 @@ BIRU_UTAMA  = "#2563EB"
 ABU_TEKS    = "#6B7280"
 ABU_TERANG  = "#F2F3F5"
 
-PALET_GRADASI = ["#C62828", "#D84A4A", "#E06B6B", "#EB9090", "#F3C0C0"]
-PALET_NETRAL  = ["#1F2937", "#4B5563", "#6B7280", "#9CA3AF"]
+PALET_GRADASI = ["#C62828", "#D84A4A", "#E06B6B", "#EB9090", "#F3C0C0"]  # RFM Produk — merah
+PALET_KMEANS  = ["#1E3A8A", "#2563EB", "#60A5FA", "#93C5FD"]              # K-Means Produk — biru
+PALET_CUSTOMER = ["#065F46", "#059669", "#34D399", "#6EE7B7", "#A7F3D0"] # RFM Customer — hijau
 
 
 def apply_custom_theme():
@@ -87,13 +88,15 @@ def apply_custom_theme():
         [data-testid="stDataFrame"] {{ border: 1px solid #E5E7EB; border-radius: 10px; overflow: hidden; }}
 
         [data-baseweb="select"] > div {{
-            background-color: white !important; color: #1F2937 !important;
-            border: 1.5px solid {MERAH_UTAMA} !important; border-radius: 8px !important;
+            background-color: #FFFFFF !important; color: #1F2937 !important;
+            border: 2px solid {MERAH_UTAMA} !important; border-radius: 8px !important;
         }}
-        [data-baseweb="select"] * {{ color: #1F2937 !important; }}
+        [data-baseweb="select"] span {{ color: #1F2937 !important; }}
         [data-baseweb="select"] svg {{ fill: {MERAH_UTAMA} !important; }}
-        [data-baseweb="select"] {{ background-color: white !important; }}
-        [data-baseweb="select"] div {{ background-color: white !important; }}
+        div[data-baseweb="popover"] {{ background-color: #FFFFFF !important; }}
+        ul[data-baseweb="menu"] {{ background-color: #FFFFFF !important; border: 1px solid #E5E7EB !important; }}
+        li[role="option"] {{ background-color: #FFFFFF !important; color: #1F2937 !important; }}
+        li[role="option"]:hover {{ background-color: {ABU_TERANG} !important; color: {MERAH_UTAMA} !important; }}
         [data-testid="stSelectbox"] label {{ color: #1F2937 !important; }}
         [data-testid="stMultiSelect"] label {{ color: #1F2937 !important; }}
         [data-baseweb="popover"] [data-baseweb="menu"] {{ background-color: white !important; }}
@@ -201,6 +204,21 @@ def render_hero_banner():
         </div>
         """, unsafe_allow_html=True
     )
+
+
+def format_rupiah(nilai):
+    """Format Rupiah otomatis sesuai skala: Rb (ribu), Jt (juta), M (miliar)."""
+    if nilai is None or pd.isna(nilai):
+        return "Rp 0"
+    nilai = float(nilai)
+    if abs(nilai) >= 1e9:
+        return f"Rp {nilai/1e9:,.2f} M"
+    elif abs(nilai) >= 1e6:
+        return f"Rp {nilai/1e6:,.1f} Jt"
+    elif abs(nilai) >= 1e3:
+        return f"Rp {nilai/1e3:,.0f} Rb"
+    else:
+        return f"Rp {nilai:,.0f}"
 
 
 def kartu_insight(teks_html: str, ikon: str = "info"):
@@ -547,13 +565,14 @@ def halaman_ringkasan():
     rfm = data["rfm"]; transaksi = data["transaksi"]
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Revenue", f"Rp {data['kpi']['revenue']/1e9:.2f} M")
+    col1.metric("Total Revenue", format_rupiah(data['kpi']['revenue']))
     col2.metric("Total Invoice", f"{data['kpi']['invoice']:,}".replace(",", "."))
     col3.metric("Produk Aktif", data['kpi']['produk'])
     col4.metric("Total Customer", data['kpi']['customer'])
 
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
     st.markdown("### Insight Otomatis")
+    st.caption("Ringkasan otomatis untuk membantu manajemen memahami kondisi penjualan tanpa perlu membaca data mentah.")
 
     bulanan = transaksi.groupby("BULAN")["HARGA_JUAL"].sum()
     champion_count = int((rfm["Segment_RFM"] == "Champion").sum())
@@ -561,10 +580,10 @@ def halaman_ringkasan():
 
     c1, c2 = st.columns(2)
     with c1:
-        kartu_insight(f"Bulan penjualan tertinggi: <b>{bulanan.idxmax()}</b> (Rp {bulanan.max()/1e6:,.0f} Jt)", ikon="up")
-        kartu_insight(f"<b>{champion_count} produk</b> masuk segmen <b>Champion</b> (RFM Analysis)", ikon="flag")
+        kartu_insight(f"Bulan penjualan tertinggi: <b>{bulanan.idxmax()}</b> ({format_rupiah(bulanan.max())})", ikon="up")
+        kartu_insight(f"<b>{champion_count} produk</b> masuk segmen <b>Champion</b> (RFM Analysis) — prioritaskan ketersediaan stok", ikon="flag")
     with c2:
-        kartu_insight(f"Bulan penjualan terendah: <b>{bulanan.idxmin()}</b> (Rp {bulanan.min()/1e6:,.0f} Jt)", ikon="down")
+        kartu_insight(f"Bulan penjualan terendah: <b>{bulanan.idxmin()}</b> ({format_rupiah(bulanan.min())})", ikon="down")
         kartu_insight(f"<b>{kelompok_a_count} produk</b> masuk <b>Kelompok A</b> (K-Means, performa tertinggi)", ikon="flag")
 
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
@@ -576,6 +595,7 @@ def halaman_ringkasan():
         st.plotly_chart(px.line(data["tren"], x="Bulan", y="Revenue", markers=True, color_discrete_sequence=["#B91C1C"]), use_container_width=True)
     with col_right:
         st.subheader("Distribusi Segmen RFM Produk")
+        st.caption("Warna merah = RFM Analysis (rule-based)")
         st.plotly_chart(px.pie(data["segment_summary"], names="Segment_RFM", values="Jumlah_Produk", hole=0.5, color_discrete_sequence=PALET_GRADASI), use_container_width=True)
 
     col_left2, col_right2 = st.columns(2)
@@ -587,21 +607,27 @@ def halaman_ringkasan():
         st.plotly_chart(fig_bar, use_container_width=True)
     with col_right2:
         st.subheader("Distribusi Klaster K-Means")
+        st.caption("Warna biru-abu = K-Means Clustering (unsupervised) — sengaja beda warna dari RFM di atas")
         cp = data["cluster_profile"]
         if "Peringkat_Cluster" in cp.columns:
             cp = cp.sort_values("Peringkat_Cluster")
-        fig_donat2 = px.pie(cp, names="Segment_Cluster", values="Jumlah_Produk", hole=0.5, color_discrete_sequence=PALET_NETRAL)
+        fig_donat2 = px.pie(cp, names="Segment_Cluster", values="Jumlah_Produk", hole=0.5, color_discrete_sequence=PALET_KMEANS)
         st.plotly_chart(fig_donat2, use_container_width=True)
 
     info_box(
-        "Segmen RFM (Champion/At Risk/dst) dan Klaster K-Means (Kelompok A/B/C/D) merupakan "
-        "<b>dua hasil analisis independen</b> pada fitur dasar yang sama. Detail metodologi dan "
-        "validasi silang keduanya dapat dilihat pada halaman <b>Segmentasi Produk</b>."
+        "Segmen RFM (Champion/At Risk/dst, <b>warna merah</b>) dan Klaster K-Means (Kelompok A/B/C/D, "
+        "<b>warna biru-abu</b>) merupakan <b>dua hasil analisis independen</b> pada fitur dasar yang sama. "
+        "Perbedaan warna sengaja diterapkan agar kedua hasil analisis mudah dibedakan secara visual. "
+        "Detail metodologi dan validasi silang keduanya dapat dilihat pada halaman <b>Segmentasi Produk</b>."
     )
 
     # ── Tren Penjualan per Tanggal ──
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
     st.subheader("Tren Penjualan per Tanggal")
+    st.caption(
+        "Menampilkan pola penjualan berdasarkan tanggal (1-31), untuk membantu manajemen "
+        "merencanakan ketersediaan stok pada tanggal-tanggal tertentu yang secara historis ramai."
+    )
 
     transaksi_periode = transaksi.copy()
     transaksi_periode['TANGGAL'] = pd.to_datetime(transaksi_periode['TANGGAL'])
@@ -635,6 +661,17 @@ def halaman_ringkasan():
     fig_tanggal.update_layout(xaxis=dict(tickmode='linear', dtick=1))
     st.plotly_chart(fig_tanggal, use_container_width=True)
 
+    # Info otomatis tentang tren tanggal yang sedang dipilih
+    tanggal_max_row = tren_tanggal.loc[tren_tanggal['Nilai_Tampil'].idxmax()]
+    tanggal_min_row = tren_tanggal.loc[tren_tanggal['Nilai_Tampil'].idxmin()]
+    info_box(
+        f"Pada tampilan <b>{keterangan}</b>, tanggal dengan penjualan <b>tertinggi</b> adalah "
+        f"tanggal <b>{int(tanggal_max_row['HARI'])}</b> ({format_rupiah(tanggal_max_row['Nilai_Tampil'])}), "
+        f"sedangkan tanggal dengan penjualan <b>terendah</b> adalah tanggal "
+        f"<b>{int(tanggal_min_row['HARI'])}</b> ({format_rupiah(tanggal_min_row['Nilai_Tampil'])}). "
+        f"Pola ini dapat digunakan untuk merencanakan waktu promosi atau memastikan stok produk terlaris."
+    )
+
     st.markdown("##### Produk dengan Penjualan Tertinggi Berdasarkan Tanggal")
     daftar_tanggal = sorted(data_tanggal['HARI'].unique().tolist())
     tanggal_terpilih = st.selectbox("Pilih tanggal", daftar_tanggal, key="dropdown_tanggal_produk")
@@ -646,23 +683,54 @@ def halaman_ringkasan():
         fig_top_tanggal.update_layout(yaxis={'categoryorder': 'total ascending'})
         st.plotly_chart(fig_top_tanggal, use_container_width=True)
         produk_teratas = top_produk_tanggal.iloc[0]
-        st.success(f"Pada tanggal **{tanggal_terpilih}** ({keterangan}), produk tertinggi: **{produk_teratas['ITEM']}** (Rp {produk_teratas['HARGA_JUAL']/1e6:,.1f} Jt).")
+        st.success(f"Pada tanggal **{tanggal_terpilih}** ({keterangan}), produk dengan penjualan tertinggi adalah **{produk_teratas['ITEM']}** ({format_rupiah(produk_teratas['HARGA_JUAL'])}).")
+    else:
+        st.info(f"Tidak ada transaksi pada tanggal {tanggal_terpilih} untuk {keterangan}.")
 
     if st.button("Deteksi Tanggal Menonjol", type="primary"):
         rata2 = tren_tanggal['Nilai_Tampil'].mean(); std2 = tren_tanggal['Nilai_Tampil'].std()
         puncak = tren_tanggal[tren_tanggal['Nilai_Tampil'] > rata2 + std2].sort_values('Nilai_Tampil', ascending=False)
         lembah = tren_tanggal[tren_tanggal['Nilai_Tampil'] < rata2 - std2].sort_values('Nilai_Tampil')
+
+        st.caption(
+            f"Metode: tanggal dianggap 'menonjol' apabila nilainya berbeda lebih dari 1 standar deviasi "
+            f"dari rata-rata seluruh tanggal (rata-rata = {format_rupiah(rata2)})."
+        )
         col_p, col_l = st.columns(2)
         with col_p:
-            st.markdown("**Tanggal menonjol tinggi**")
-            for _, row in puncak.head(5).iterrows():
-                st.markdown(f"- Tanggal **{int(row['HARI'])}** — Rp {row['Nilai_Tampil']/1e6:,.1f} Jt")
+            st.markdown("**📈 Tanggal menonjol tinggi**")
+            if not puncak.empty:
+                for _, row in puncak.head(5).iterrows():
+                    st.markdown(f"- Tanggal **{int(row['HARI'])}** — {format_rupiah(row['Nilai_Tampil'])}")
+            else:
+                st.caption("Tidak ada tanggal yang menonjol signifikan secara statistik.")
         with col_l:
-            st.markdown("**Tanggal menonjol rendah**")
-            for _, row in lembah.head(5).iterrows():
-                st.markdown(f"- Tanggal **{int(row['HARI'])}** — Rp {row['Nilai_Tampil']/1e6:,.1f} Jt")
+            st.markdown("**📉 Tanggal menonjol rendah**")
+            if not lembah.empty:
+                for _, row in lembah.head(5).iterrows():
+                    st.markdown(f"- Tanggal **{int(row['HARI'])}** — {format_rupiah(row['Nilai_Tampil'])}")
+            else:
+                st.caption("Tidak ada tanggal yang menonjol signifikan secara statistik.")
 
+        if not puncak.empty:
+            daftar_puncak = ", ".join(str(int(h)) for h in puncak['HARI'].head(5))
+            st.success(
+                f"**Rekomendasi:** tanggal **{daftar_puncak}** secara historis menunjukkan penjualan "
+                f"lebih tinggi dari rata-rata. Disarankan memastikan ketersediaan stok produk terlaris "
+                f"menjelang tanggal-tanggal tersebut setiap bulannya."
+            )
+
+    # ── Periode Gajian vs Normal ──
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.subheader("Insight: Periode Gajian vs Normal")
+    st.caption(
+        "Membandingkan rata-rata penjualan per hari antara periode gajian (tanggal 25-31 dan 1-5) "
+        "dengan periode normal (tanggal 6-24). Perbandingan menggunakan rata-rata PER HARI "
+        "(bukan total) karena periode gajian (11 hari) dan periode normal (19 hari) memiliki "
+        "jumlah hari yang berbeda — jika dibandingkan totalnya, periode normal akan selalu "
+        "terlihat lebih besar hanya karena jumlah harinya lebih banyak, bukan karena polanya "
+        "benar-benar berbeda."
+    )
     if st.button("Tampilkan Perbandingan Periode Gajian vs Normal", type="primary"):
         def kategori_periode(hari):
             return "Periode Gajian (25-5)" if (hari >= 25 or hari <= 5) else "Periode Normal (6-24)"
@@ -672,9 +740,44 @@ def halaman_ringkasan():
         tg['Rata2'] = tg.apply(lambda r: r['HARGA_JUAL'] / jumlah_hari[r['PERIODE_GAJIAN']], axis=1)
         gajian_row = tg[tg['PERIODE_GAJIAN'].str.contains('Gajian')]
         normal_row = tg[tg['PERIODE_GAJIAN'].str.contains('Normal')]
+
         c1, c2 = st.columns(2)
-        if not gajian_row.empty: c1.metric("Revenue/hari — Gajian", f"Rp {gajian_row['Rata2'].values[0]/1e6:,.1f} Jt")
-        if not normal_row.empty: c2.metric("Revenue/hari — Normal", f"Rp {normal_row['Rata2'].values[0]/1e6:,.1f} Jt")
+        if not gajian_row.empty:
+            c1.metric("Revenue/hari — Periode Gajian (11 hari)", format_rupiah(gajian_row['Rata2'].values[0]))
+        if not normal_row.empty:
+            c2.metric("Revenue/hari — Periode Normal (19 hari)", format_rupiah(normal_row['Rata2'].values[0]))
+
+        if not gajian_row.empty and not normal_row.empty:
+            nilai_gajian = gajian_row['Rata2'].values[0]
+            nilai_normal = normal_row['Rata2'].values[0]
+            selisih_persen = ((nilai_gajian - nilai_normal) / nilai_normal) * 100 if nilai_normal else 0
+
+            if selisih_persen > 5:
+                st.success(
+                    f"**Mengapa berbeda?** Rata-rata revenue harian pada periode gajian "
+                    f"**{selisih_persen:.1f}% lebih tinggi** dibanding periode normal. Ini menunjukkan "
+                    f"pelanggan cenderung berbelanja lebih banyak setelah menerima gaji (tanggal 25 ke atas "
+                    f"hingga awal bulan berikutnya). **Rekomendasi:** tambah stok produk terlaris menjelang "
+                    f"tanggal 25 setiap bulan untuk mengantisipasi lonjakan permintaan."
+                )
+            elif selisih_persen < -5:
+                st.info(
+                    f"**Mengapa berbeda?** Rata-rata revenue harian pada periode gajian justru "
+                    f"**{abs(selisih_persen):.1f}% lebih rendah** dibanding periode normal. Ini mengindikasikan "
+                    f"pola pembelian pelanggan PT Duta Buana Perkasa (yang sebagian besar adalah bengkel/toko) "
+                    f"tidak terlalu dipengaruhi siklus gajian karyawan pada umumnya, melainkan lebih dipengaruhi "
+                    f"faktor operasional bisnis pelanggan itu sendiri."
+                )
+            else:
+                st.info(
+                    "**Mengapa tidak jauh berbeda?** Selisih rata-rata revenue harian antara periode gajian "
+                    "dan periode normal berada di bawah 5%, sehingga tidak cukup signifikan untuk disimpulkan "
+                    "sebagai pola yang berbeda. Hal ini wajar mengingat basis pelanggan utama adalah pelaku "
+                    "usaha (bengkel/toko) yang pola belanjanya lebih dipengaruhi kebutuhan operasional "
+                    "dibanding siklus gajian bulanan."
+                )
+
+
 # ════════════════════════════════════════════════════════════════
 # BAGIAN 5 — HALAMAN: SEGMENTASI PRODUK (RFM + K-Means + Validasi + Outlier)
 # ════════════════════════════════════════════════════════════════
@@ -743,7 +846,7 @@ def halaman_segmentasi_produk():
     with tab_kmeans:
         st.markdown("##### Sebaran Produk per Klaster")
         fig = px.scatter(rfm, x="Frequency", y="Monetary", color="Segment_Cluster", size="Total_QTY",
-                          hover_name="ITEM", color_discrete_sequence=PALET_NETRAL)
+                          hover_name="ITEM", color_discrete_sequence=PALET_KMEANS)
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("##### Profil dan Peringkat Tiap Klaster")
@@ -869,21 +972,49 @@ def halaman_segmentasi_customer():
     c3.metric("Customer At Risk", int((rfm_customer['Segment_Customer'] == 'At Risk').sum()))
 
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.caption("Warna hijau digunakan pada halaman ini untuk membedakan segmentasi Customer dari segmentasi Produk (warna merah) dan K-Means (warna biru).")
 
     col_left, col_right = st.columns([1, 1.2])
     with col_left:
         st.subheader("Distribusi Segmen Customer")
         seg_count = rfm_customer['Segment_Customer'].value_counts().rename_axis('Segmen').reset_index(name='Jumlah Customer')
         st.plotly_chart(px.pie(seg_count, names='Segmen', values='Jumlah Customer', hole=0.5,
-                                color_discrete_sequence=PALET_GRADASI), use_container_width=True)
+                                color_discrete_sequence=PALET_CUSTOMER), use_container_width=True)
     with col_right:
         st.subheader("Sebaran Customer: Frequency vs Monetary")
         st.plotly_chart(px.scatter(rfm_customer, x='Frequency', y='Monetary', color='Segment_Customer',
-                                    hover_name='NAMA_CUSTOMER', color_discrete_sequence=PALET_GRADASI),
+                                    hover_name='NAMA_CUSTOMER', color_discrete_sequence=PALET_CUSTOMER),
                          use_container_width=True)
 
-    st.subheader("Detail Data Customer")
+    # ── Karakteristik rata-rata tiap segmen (setara dengan halaman Segmentasi Produk) ──
+    st.markdown("##### Karakteristik Rata-Rata Tiap Segmen Customer")
     urutan_segmen = ['Champion', 'High Performer', 'Growing', 'At Risk', 'Dormant']
+    karakteristik_cust = rfm_customer.groupby('Segment_Customer').agg(
+        Jumlah_Customer=('NAMA_CUSTOMER', 'count'), Recency=('Recency', 'mean'),
+        Frequency=('Frequency', 'mean'), Monetary=('Monetary', 'mean')
+    ).round(2)
+    karakteristik_cust = karakteristik_cust.reindex([s for s in urutan_segmen if s in karakteristik_cust.index])
+    st.dataframe(karakteristik_cust, use_container_width=True)
+
+    colx1, colx2, colx3 = st.columns(3)
+    with colx1:
+        st.plotly_chart(px.bar(karakteristik_cust, y='Recency', color_discrete_sequence=["#065F46"],
+                                title="Recency (rendah = baik)"), use_container_width=True)
+    with colx2:
+        st.plotly_chart(px.bar(karakteristik_cust, y='Frequency', color_discrete_sequence=["#059669"],
+                                title="Frequency (tinggi = baik)"), use_container_width=True)
+    with colx3:
+        st.plotly_chart(px.bar(karakteristik_cust, y='Monetary', color_discrete_sequence=["#34D399"],
+                                title="Monetary (tinggi = baik)"), use_container_width=True)
+
+    info_box(
+        "<b>Kriteria segmentasi:</b> Champion (skor RFM ≥13), High Performer (10-12), Growing (7-9), "
+        "At Risk (4-6), Dormant (&lt;4) — dihitung dari total skor Recency + Frequency + Monetary "
+        "(masing-masing diberi skor 1-5 berdasarkan kuantil). Metode identik dengan segmentasi produk, "
+        "namun diterapkan pada satuan analisis pelanggan, sesuai kerangka asli Hughes (1994)."
+    )
+
+    st.markdown("##### Detail Data Customer")
     filter_segmen = st.multiselect("Filter berdasarkan segmen", urutan_segmen, default=urutan_segmen, key="filter_cust")
     tampil = rfm_customer[rfm_customer['Segment_Customer'].isin(filter_segmen)].sort_values('RFM_Score', ascending=False)
     st.dataframe(tampil[['NAMA_CUSTOMER', 'Recency', 'Frequency', 'Monetary', 'RFM_Score', 'Segment_Customer']],
@@ -895,6 +1026,7 @@ def halaman_segmentasi_customer():
             "Segmentasi customer dan produk menggunakan kerangka RFM yang sama, namun diterapkan "
             "pada unit analisis berbeda — keduanya bersifat komplementer, bukan saling menggantikan."
         )
+
         seg_p = rfm_produk['Segment_RFM'].value_counts()
         seg_c = rfm_customer['Segment_Customer'].value_counts()
 
@@ -1122,7 +1254,7 @@ def halaman_upload_data():
 
     with tabs[1]:
         st.plotly_chart(px.scatter(rfm_baru, x="Frequency", y="Monetary", color="Segment_Cluster",
-                                    size="Total_QTY", hover_name="ITEM", color_discrete_sequence=PALET_NETRAL), use_container_width=True)
+                                    size="Total_QTY", hover_name="ITEM", color_discrete_sequence=PALET_KMEANS), use_container_width=True)
         st.dataframe(rfm_baru, use_container_width=True)
         st.download_button("Unduh Hasil RFM Produk (CSV)", rfm_baru.to_csv(index=False).encode("utf-8"), "hasil_rfm_produk_baru.csv", "text/csv")
 
