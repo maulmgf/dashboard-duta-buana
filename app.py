@@ -43,6 +43,9 @@ WARNA_KLASTER = {'Kelompok A': '#2563EB', 'Kelompok B': '#F59E0B', 'Kelompok C':
 NAMA_BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli',
               'Agustus', 'September', 'Oktober', 'November', 'Desember']
 
+# Kolom pada Cluster_Profile yang berisi nilai Rupiah (diformat penuh di tabel)
+KOLOM_RUPIAH_KLASTER = ['Monetary', 'Monetary_Median', 'Monetary_Min', 'Monetary_Max']
+
 
 def apply_custom_theme():
     st.markdown(
@@ -362,6 +365,7 @@ def load_data():
         "interval_rfm": _baca_opsional(xls, "Interval_RFM"),
         "interval_rfm_cust": _baca_opsional(xls, "Interval_RFM_Customer"),
         "aturan_klaster": _baca_opsional(xls, "Aturan_Klaster"),
+        "pengaruh_fitur": _baca_opsional(xls, "Pengaruh_Fitur"),
         "kpi": {
             "produk": int(kpi.get("Jumlah Produk", 0)),
             "invoice": int(kpi.get("Jumlah Invoice", 0)),
@@ -675,7 +679,7 @@ def halaman_ringkasan():
         if not terbaik.empty:
             ket_t = terbaik["Karakteristik_Cluster"].iloc[0] if "Karakteristik_Cluster" in terbaik.columns else ""
             kartu_insight(f"<b>{len(terbaik)} produk</b> masuk <b>{terbaik['Segment_Cluster'].iloc[0]}</b> "
-                          f"(K-Means, klaster peringkat 1): {ket_t}", ikon="flag")
+                          f"(K-Means, klaster peringkat 1). Ciri rata-rata klaster: {ket_t}", ikon="flag")
 
     b1, b2, _ = st.columns([1.2, 1.2, 2.6])
     if b1.button("Rincian segmen RFM →", key="ke_rfm"):
@@ -933,7 +937,8 @@ def halaman_segmentasi_produk():
         "Halaman ini menampilkan <b>dua hasil analisis independen</b>: RFM Analysis (rule-based, 5 segmen) "
         "dan K-Means Clustering (unsupervised, Kelompok A, B, C, …). K-Means memakai tiga fitur: "
         "<b>Recency</b> (hari sejak terakhir terjual, makin kecil makin baik), <b>Frequency</b> (jumlah invoice) "
-        "dan <b>Monetary</b> (total nilai penjualan)."
+        "dan <b>Monetary</b> (total nilai penjualan). Label klaster menggambarkan rata-rata, "
+        "bukan sifat tiap produk."
     )
     data = load_data()
     rfm = data["rfm"]
@@ -996,6 +1001,12 @@ def halaman_segmentasi_produk():
 
     # ── TAB K-MEANS ──
     with tab_kmeans:
+        info_box(
+            "<b>Cara membaca klaster:</b> label seperti \"Recency rata-rata paling baru\" menggambarkan "
+            "<b>rata-rata</b> klaster, bukan sifat setiap produk di dalamnya. Nilai tiap produk bisa "
+            "berbeda dan saling tumpang tindih antar-klaster, terutama pada Monetary. Lihat kolom "
+            "<i>median</i> dan <i>min/max</i> pada tabel profil di bawah."
+        )
         urut_k = sorted(rfm["Segment_Cluster"].unique())
         st.markdown("##### Sebaran Produk per Klaster (3 Dimensi)")
         st.caption("Sumbu: Recency, Frequency, Monetary — sama dengan fitur yang dipakai K-Means. "
@@ -1015,21 +1026,36 @@ def halaman_segmentasi_produk():
         st.markdown("##### Profil dan Peringkat Tiap Klaster")
         cp = data["cluster_profile"]
         kolom_profil = [c for c in ['Segment_Cluster', 'Peringkat_Cluster', 'Karakteristik_Cluster', 'Jumlah_Produk',
-                                     'Recency', 'Frequency', 'Monetary', 'Total_QTY', 'Avg_Disc'] if c in cp.columns]
-        st.dataframe(format_tabel_rupiah(cp.sort_values("Peringkat_Cluster")[kolom_profil], ['Monetary']),
+                                     'Recency', 'Recency_Median', 'Frequency', 'Frequency_Median',
+                                     'Monetary', 'Monetary_Median', 'Monetary_Min', 'Monetary_Max',
+                                     'Total_QTY', 'Avg_Disc'] if c in cp.columns]
+        st.dataframe(format_tabel_rupiah(cp.sort_values("Peringkat_Cluster")[kolom_profil], KOLOM_RUPIAH_KLASTER),
                      use_container_width=True, hide_index=True)
-        st.caption("Kolom *Karakteristik* menjelaskan kedudukan tiap klaster dibanding klaster lain pada setiap fitur "
-                   "(peringkat antar-klaster). Peringkat klaster dihitung dari gabungan peringkat Recency (dibalik), Frequency, dan Monetary.")
+        st.caption("Kolom Karakteristik menjelaskan kedudukan rata-rata tiap klaster dibanding klaster lain "
+                   "(peringkat antar-klaster). Peringkat klaster dihitung dari gabungan peringkat Recency (dibalik), "
+                   "Frequency, dan Monetary. Gunakan median dan min/max untuk melihat sebaran nilai produk sebenarnya.")
 
         urutan_klaster = cp.sort_values("Peringkat_Cluster")["Segment_Cluster"].tolist()
         cp_idx = cp.set_index("Segment_Cluster").reindex(urutan_klaster)
         colc1, colc2, colc3 = st.columns(3)
         with colc1:
-            st.plotly_chart(bar_warna(cp_idx, 'Recency', "Recency per Klaster (rendah = baik)", WARNA_KLASTER), use_container_width=True)
+            st.plotly_chart(bar_warna(cp_idx, 'Recency', "Rata-rata Recency per Klaster (rendah = baik)", WARNA_KLASTER),
+                            use_container_width=True)
         with colc2:
-            st.plotly_chart(bar_warna(cp_idx, 'Frequency', "Frequency per Klaster", WARNA_KLASTER), use_container_width=True)
+            st.plotly_chart(bar_warna(cp_idx, 'Frequency', "Rata-rata Frequency per Klaster", WARNA_KLASTER),
+                            use_container_width=True)
         with colc3:
-            st.plotly_chart(bar_warna(cp_idx, 'Monetary', "Monetary per Klaster", WARNA_KLASTER), use_container_width=True)
+            st.plotly_chart(bar_warna(cp_idx, 'Monetary', "Rata-rata Monetary per Klaster", WARNA_KLASTER),
+                            use_container_width=True)
+
+        # Fitur yang paling menentukan klaster
+        pf = data.get("pengaruh_fitur")
+        if pf is not None and not pf.empty:
+            st.markdown("##### Fitur yang Paling Menentukan Klaster")
+            st.caption("Setiap fitur dibuang satu per satu lalu K-Means dijalankan ulang, dan hasilnya dibandingkan "
+                       "dengan klaster asli memakai Adjusted Rand Index (ARI). ARI mendekati 1 berarti klaster hampir "
+                       "tidak berubah, jadi fitur itu kurang berpengaruh. ARI yang rendah berarti fitur itu menentukan.")
+            st.dataframe(pf, hide_index=True, use_container_width=True)
 
         st.markdown("##### Mengapa produk ini masuk klaster tersebut?")
         if "Alasan_Klaster" in rfm.columns:
@@ -1044,7 +1070,8 @@ def halaman_segmentasi_produk():
         if "aturan_klaster" in data and not data["aturan_klaster"].empty:
             with st.expander("Ringkasan aturan interval klaster (decision tree)"):
                 st.caption("K-Means mengelompokkan berdasarkan jarak, bukan ambang. Aturan berikut hanya ringkasan "
-                           "yang meniru hasil K-Means, dengan tingkat kecocokan seperti pada judul kolom.")
+                           "yang meniru hasil K-Means, dengan tingkat kecocokan seperti pada judul kolom. "
+                           "Perhatikan fitur mana yang muncul pada aturan: itulah yang paling membedakan klaster.")
                 st.code("\n".join(data["aturan_klaster"].iloc[:, 0].fillna("").astype(str).tolist()))
 
         with st.expander("Kenapa klaster diberi nama 'Kelompok A/B/C…', bukan 'Champion' seperti RFM?"):
@@ -1055,6 +1082,10 @@ def halaman_segmentasi_produk():
             Nama diberikan **setelah** klaster terbentuk: (1) hitung rata-rata tiap fitur per klaster,
             (2) hitung peringkat performa dari gabungan peringkat ketiga fitur, (3) beri nama Kelompok A, B, C, …
             sesuai peringkat. Nama sengaja berbeda dari istilah RFM agar kedua hasil analisis tidak tertukar.
+
+            **Catatan penting:** peringkat dan label menggambarkan *rata-rata* klaster. Karena itu sebuah produk
+            di Kelompok A bisa saja bernilai Monetary rendah bila Recency dan Frequency-nya mirip anggota
+            Kelompok A lainnya.
             """)
 
         with st.expander("Lihat detail data produk per klaster"):
@@ -1190,7 +1221,7 @@ def halaman_segmentasi_customer():
                              .rename(columns={'Jumlah': 'Jumlah Customer'}), hide_index=True, use_container_width=True)
 
     info_box("<b>Kriteria segmen:</b> Champion (skor RFM ≥13), High Performer (10–12), Growing (7–9), "
-             "At Risk (4–6), Dormant (<4), dari total skor Recency + Frequency + Monetary (masing-masing 1–5).")
+             "At Risk (4–6), Dormant (&lt;4), dari total skor Recency + Frequency + Monetary (masing-masing 1–5).")
 
     # ── Produk yang dibeli tiap segmen ──
     st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
