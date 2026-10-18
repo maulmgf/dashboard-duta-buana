@@ -644,6 +644,20 @@ with st.sidebar:
     _t = _versi_data()
     if _t:
         st.caption("Data diperbarui: " + time.strftime("%d-%m-%Y %H:%M", time.localtime(_t)))
+    if st.checkbox("Diagnostik data", key="diag_data"):
+        st.caption(f"Folder app: {os.path.dirname(os.path.abspath(__file__))}")
+        st.caption(f"Berkas data: {os.path.abspath(DATA_PATH)}")
+        try:
+            st.caption(f"Ukuran: {os.path.getsize(DATA_PATH):,} byte")
+            _seg = pd.read_excel(DATA_PATH, sheet_name="Segment_Summary")
+            _rfm = pd.read_excel(DATA_PATH, sheet_name="RFM_Produk", usecols=["Segment_RFM"])
+            st.caption("Segment_Summary (langsung dari file): " +
+                       ", ".join(f"{a} {int(b)}" for a, b in zip(_seg["Segment_RFM"], _seg["Jumlah_Produk"])))
+            st.caption("RFM_Produk (langsung dari file): " +
+                       ", ".join(f"{a} {b}" for a, b in _rfm["Segment_RFM"].value_counts().items()))
+            st.caption("Sheet tersedia: " + ", ".join(pd.ExcelFile(DATA_PATH).sheet_names))
+        except Exception as _e:
+            st.caption(f"Gagal membaca berkas: {_e}")
 
 
 # ════════════════════════════════════════════════════════════════
