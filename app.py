@@ -319,24 +319,20 @@ def rfm_segment(s):
     return 'Dormant'
 
 
-def _ambang(seri):
-    s = seri.round(0)
-    q = np.floor(s.quantile([0.2, 0.4, 0.6, 0.8])).tolist()
-    return s, q
-
-
-def beri_skor(seri, tinggi_lebih_baik):
-    """Skor 1-5 dari persentil 20/40/60/80. Nilai yang sama selalu mendapat skor yang sama."""
-    s, q = _ambang(seri)
-    n = np.searchsorted(q, s.values, side='left')
-    return (n + 1) if tinggi_lebih_baik else (5 - n)
+# Konfigurasi skor sama dengan notebook (versi awal): kuintil dari peringkat nilai.
+# Recency: nilai terkecil (paling baru) -> skor 5. Frequency & Monetary: nilai terkecil -> skor 1.
+SCORING_CONFIG = [
+    ('Recency',   True, [5, 4, 3, 2, 1]),
+    ('Frequency', True, [1, 2, 3, 4, 5]),
+    ('Monetary',  True, [1, 2, 3, 4, 5]),
+]
 
 
 def hitung_skor_rfm(rfm_df):
     hasil = rfm_df.copy()
-    hasil['R_Score'] = beri_skor(hasil['Recency'], False)
-    hasil['F_Score'] = beri_skor(hasil['Frequency'], True)
-    hasil['M_Score'] = beri_skor(hasil['Monetary'], True)
+    for col, asc, labels in SCORING_CONFIG:
+        ranked = hasil[col].rank(method='first', ascending=asc)
+        hasil[f'{col[0]}_Score'] = pd.qcut(ranked, q=5, labels=labels).astype(int)
     hasil['RFM_Score'] = hasil['R_Score'] + hasil['F_Score'] + hasil['M_Score']
     return hasil
 
@@ -978,13 +974,15 @@ def halaman_segmentasi_produk():
         iv = data.get("interval_rfm")
         if iv is not None and not iv.empty:
             st.markdown("##### Batas Interval Skor R, F, M")
-            st.caption("Setiap nilai hanya masuk ke satu skor. Batas ditentukan dari persentil 20/40/60/80 data. "
-                       "Recency dibalik: hari lebih sedikit = skor lebih tinggi.")
+            st.caption("Skor 1-5 dibagi dalam kuintil (sekitar 20% produk per skor) berdasarkan peringkat nilai. "
+                       "Interval menunjukkan nilai terkecil dan terbesar pada tiap skor. Recency dibalik: hari lebih sedikit = skor lebih tinggi. "
+                       "Bila beberapa produk bernilai sama persis, nilai itu dapat muncul di dua skor yang bersebelahan (lihat kolom Catatan).")
             ci = st.columns(3)
             for kol, komp in zip(ci, ['Recency', 'Frequency', 'Monetary']):
                 with kol:
                     st.markdown(f"**{komp}**")
-                    st.dataframe(iv[iv['Komponen'] == komp][['Skor', 'Interval', 'Jumlah']]
+                    kolom_iv = [c for c in ['Skor', 'Interval', 'Jumlah', 'Catatan'] if c in iv.columns]
+                    st.dataframe(iv[iv['Komponen'] == komp][kolom_iv].fillna("")
                                  .rename(columns={'Jumlah': 'Jumlah Produk'}),
                                  hide_index=True, use_container_width=True)
 
@@ -1217,7 +1215,8 @@ def halaman_segmentasi_customer():
         for kol, komp in zip(ci, ['Recency', 'Frequency', 'Monetary']):
             with kol:
                 st.markdown(f"**{komp}**")
-                st.dataframe(iv[iv['Komponen'] == komp][['Skor', 'Interval', 'Jumlah']]
+                kolom_iv = [c for c in ['Skor', 'Interval', 'Jumlah', 'Catatan'] if c in iv.columns]
+                st.dataframe(iv[iv['Komponen'] == komp][kolom_iv].fillna("")
                              .rename(columns={'Jumlah': 'Jumlah Customer'}), hide_index=True, use_container_width=True)
 
     info_box("<b>Kriteria segmen:</b> Champion (skor RFM ≥13), High Performer (10–12), Growing (7–9), "
