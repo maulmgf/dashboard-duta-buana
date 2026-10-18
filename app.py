@@ -3,7 +3,7 @@ Dashboard Analisis Penjualan PT Duta Buana Perkasa
 ====================================================
 Aplikasi web interaktif berbasis Streamlit.
 
-CATATAN METODOLOGIS: Klaster hasil K-Means diberi label deskriptif "Kelompok A/B/C/D"
+CATATAN METODOLOGIS: Klaster hasil K-Means diberi label deskriptif "Kelompok A/B/C"
 yang sengaja berbeda dari istilah RFM Analysis ("Champion", "At Risk", dst) agar
 hasil clustering (unsupervised) tidak tertukar dengan RFM (rule-based).
 K-Means memakai tiga fitur: Recency, Frequency, Monetary.
@@ -317,6 +317,14 @@ KOLOM_MENTAH_ASLI = ['NO_INVOICE','TANGGAL','NO_CUSTOMER','NAMA_CUSTOMER',
 KOLOM_WAJIB = ['NO_INVOICE', 'TANGGAL', 'NO_CUSTOMER', 'NAMA_CUSTOMER',
                'ITEM', 'QTY', 'HARGA_JUAL', 'DISKON_PCT']
 
+# ── Metode skor RFM ──────────────────────────────────────────────
+# "rank"  : kuintil dari urutan peringkat (sama dengan notebook final). Nilai kembar bisa
+#           terpecah ke dua skor yang bersebelahan.
+# "nilai" : nilai yang sama selalu mendapat skor yang sama (interval tidak tumpang tindih).
+# PENTING: notebook dan app HARUS memakai metode yang sama. Bila diubah di sini,
+# ubah juga beri_skor dan tabel_interval di notebook, lalu ekspor ulang Excel.
+SKOR_METODE = "rank"
+
 
 def rfm_segment(s):
     if s >= 13: return 'Champion'
@@ -326,20 +334,29 @@ def rfm_segment(s):
     return 'Dormant'
 
 
-# Konfigurasi skor sama dengan notebook (versi awal): kuintil dari peringkat nilai.
-# Recency: nilai terkecil (paling baru) -> skor 5. Frequency & Monetary: nilai terkecil -> skor 1.
-SCORING_CONFIG = [
-    ('Recency',   True, [5, 4, 3, 2, 1]),
-    ('Frequency', True, [1, 2, 3, 4, 5]),
-    ('Monetary',  True, [1, 2, 3, 4, 5]),
-]
+def _skor_rank(seri, tinggi_lebih_baik):
+    urut = seri.rank(method='first', ascending=True)
+    idx = pd.qcut(urut, q=5, labels=False).astype(int)          # 0..4 dari nilai terkecil
+    return (idx + 1) if tinggi_lebih_baik else (5 - idx)
+
+
+def _skor_nilai(seri, tinggi_lebih_baik):
+    s = seri.round(0)
+    q = np.floor(s.quantile([0.2, 0.4, 0.6, 0.8])).tolist()
+    n = np.searchsorted(q, s.values, side='left')
+    return (n + 1) if tinggi_lebih_baik else (5 - n)
+
+
+def beri_skor(seri, tinggi_lebih_baik):
+    fungsi = _skor_nilai if SKOR_METODE == "nilai" else _skor_rank
+    return fungsi(seri, tinggi_lebih_baik)
 
 
 def hitung_skor_rfm(rfm_df):
     hasil = rfm_df.copy()
-    for col, asc, labels in SCORING_CONFIG:
-        ranked = hasil[col].rank(method='first', ascending=asc)
-        hasil[f'{col[0]}_Score'] = pd.qcut(ranked, q=5, labels=labels).astype(int)
+    hasil['R_Score'] = beri_skor(hasil['Recency'], False)       # hari kecil = baru = skor tinggi
+    hasil['F_Score'] = beri_skor(hasil['Frequency'], True)
+    hasil['M_Score'] = beri_skor(hasil['Monetary'], True)
     hasil['RFM_Score'] = hasil['R_Score'] + hasil['F_Score'] + hasil['M_Score']
     return hasil
 
@@ -388,6 +405,44 @@ def load_data(versi_file=None):
             "max_lift": float(kpi.get("Max Lift", 0)),
         }
     }
+
+
+def cek_konsistensi(data):
+    """Bandingkan isi Excel dengan hitungan app. Mengembalikan daftar pesan masalah (kosong = aman)."""
+    pesan = []
+    rfm = data["rfm"]
+
+    if {"RFM_Score", "Segment_RFM"}.issubset(rfm.columns):
+        salah = int((rfm["Segment_RFM"] != rfm["RFM_Score"].apply(rfm_segment)).sum())
+        if salah:
+            pesan.append(f"{salah} produk punya segmen yang tidak sesuai skor RFM-nya "
+                         "(ambang segmen di Excel berbeda dari app).")
+
+    kolom = ['Recency', 'Frequency', 'Monetary', 'R_Score', 'F_Score', 'M_Score']
+    if all(c in rfm.columns for c in kolom):
+        baru = hitung_skor_rfm(rfm[['Recency', 'Frequency', 'Monetary']].copy())
+        beda = int((baru['RFM_Score'].values != (rfm['R_Score'] + rfm['F_Score'] + rfm['M_Score']).values).sum())
+        if beda:
+            pesan.append(f"{beda} produk punya skor RFM di Excel yang berbeda dari hitungan app "
+                         f"(metode skor app: '{SKOR_METODE}'). Excel kemungkinan dibuat dengan metode skor lain.")
+
+    ss = dict(zip(data["segment_summary"]["Segment_RFM"], data["segment_summary"]["Jumlah_Produk"]))
+    rr = rfm["Segment_RFM"].value_counts().to_dict()
+    beda_sheet = sorted(s for s in set(ss) | set(rr) if int(ss.get(s, 0)) != int(rr.get(s, 0)))
+    if beda_sheet:
+        pesan.append("Sheet Segment_Summary dan RFM_Produk berbeda pada: " + ", ".join(beda_sheet) + ".")
+
+    if "Segment_Cluster" in rfm.columns and rfm["Segment_Cluster"].astype(str).str.contains("Produk ").any():
+        pesan.append("Label klaster memakai format lama ('Produk Champion/Aktif/...'). "
+                     "Excel kemungkinan berasal dari gen_export.py, bukan notebook final.")
+    return pesan
+
+
+def tampilkan_peringatan_data(data):
+    pesan = cek_konsistensi(data)
+    if pesan:
+        st.warning("**Data tidak konsisten.** " + " ".join(pesan) +
+                   " Jalankan ulang notebook sampai sel ekspor, lalu timpa Dashboard_streamlit.xlsx.")
 
 
 def rekomendasi_produk(produk_terpilih, data, top_n=5):
@@ -525,13 +580,15 @@ def jalankan_pipeline_baru(df_upload):
     rfm = hitung_skor_rfm(rfm)
     rfm['Segment_RFM'] = rfm['RFM_Score'].apply(rfm_segment)
 
-    # K dipilih dari Silhouette (K >= 3), bukan dipatok 4
+    # K dipilih dari Silhouette (K >= 3), bukan dipatok; n_init disamakan dengan notebook
     sil_k = {}
     for k in range(3, min(9, len(rfm) - 1) + 1):
-        lb = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10, max_iter=1000).fit_predict(X_km)
+        lb = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=50, max_iter=1000).fit_predict(X_km)
         sil_k[k] = silhouette_score(X_km, lb)
+    if not sil_k:
+        return {"error": "Jumlah produk unik terlalu sedikit untuk menentukan jumlah klaster."}
     k_opt = max(sil_k, key=sil_k.get)
-    kmeans = KMeans(n_clusters=k_opt, init='k-means++', random_state=42, n_init=10, max_iter=1000)
+    kmeans = KMeans(n_clusters=k_opt, init='k-means++', random_state=42, n_init=100, max_iter=1000)
     rfm['Cluster'] = kmeans.fit_predict(X_km)
     sil = silhouette_score(X_km, rfm['Cluster'])
 
@@ -647,6 +704,7 @@ with st.sidebar:
     if st.checkbox("Diagnostik data", key="diag_data"):
         st.caption(f"Folder app: {os.path.dirname(os.path.abspath(__file__))}")
         st.caption(f"Berkas data: {os.path.abspath(DATA_PATH)}")
+        st.caption(f"Metode skor RFM app: {SKOR_METODE}")
         try:
             st.caption(f"Ukuran: {os.path.getsize(DATA_PATH):,} byte")
             _seg = pd.read_excel(DATA_PATH, sheet_name="Segment_Summary")
@@ -669,6 +727,7 @@ def halaman_ringkasan():
     render_hero_banner()
     data = load_data(_versi_data())
     rfm = data["rfm"]; transaksi = data["transaksi"]
+    tampilkan_peringatan_data(data)
 
     # ── KPI ──
     st.markdown("### Key Performance Indicator (KPI) Utama")
@@ -846,7 +905,7 @@ def halaman_ringkasan():
         return sub.mean() if not sub.empty else np.nan
     rentang = {"tanggal 1–10": rata_rentang(1, 10), "tanggal 11–20": rata_rentang(11, 20), "tanggal 21–31": rata_rentang(21, 31)}
     rentang = {k: v for k, v in rentang.items() if not pd.isna(v)}
-    rentang_ramai = max(rentang, key=rentang.get)
+    rentang_ramai = max(rentang, key=rentang.get) if rentang else "-"
 
     info_box(
         f"Pada tampilan <b>{keterangan}</b>, penjualan <b>tertinggi</b> terjadi pada tanggal "
@@ -972,6 +1031,7 @@ def halaman_segmentasi_produk():
     )
     data = load_data(_versi_data())
     rfm = data["rfm"]
+    tampilkan_peringatan_data(data)
 
     tab_rfm, tab_kmeans, tab_validasi, tab_outlier = st.tabs([
         "🏷️ RFM Analysis", "🔷 K-Means Clustering", "🔄 Validasi Silang", "⚠️ Deteksi Outlier"
@@ -1008,9 +1068,13 @@ def halaman_segmentasi_produk():
         iv = data.get("interval_rfm")
         if iv is not None and not iv.empty:
             st.markdown("##### Batas Interval Skor R, F, M")
-            st.caption("Skor 1-5 dibagi dalam kuintil (sekitar 20% produk per skor) berdasarkan peringkat nilai. "
-                       "Interval menunjukkan nilai terkecil dan terbesar pada tiap skor. Recency dibalik: hari lebih sedikit = skor lebih tinggi. "
-                       "Bila beberapa produk bernilai sama persis, nilai itu dapat muncul di dua skor yang bersebelahan (lihat kolom Catatan).")
+            if SKOR_METODE == "nilai":
+                st.caption("Setiap nilai hanya masuk ke satu skor. Batas ditentukan dari persentil 20/40/60/80 data. "
+                           "Recency dibalik: hari lebih sedikit = skor lebih tinggi.")
+            else:
+                st.caption("Skor 1–5 dibagi dalam kuintil (sekitar 20% produk per skor) berdasarkan peringkat nilai. "
+                           "Interval menunjukkan nilai terkecil dan terbesar pada tiap skor. Recency dibalik: hari lebih sedikit = skor lebih tinggi. "
+                           "Bila beberapa produk bernilai sama persis, nilai itu dapat muncul di dua skor yang bersebelahan (lihat kolom Catatan).")
             ci = st.columns(3)
             for kol, komp in zip(ci, ['Recency', 'Frequency', 'Monetary']):
                 with kol:
@@ -1088,6 +1152,17 @@ def halaman_segmentasi_produk():
                        "dengan klaster asli memakai Adjusted Rand Index (ARI). ARI mendekati 1 berarti klaster hampir "
                        "tidak berubah, jadi fitur itu kurang berpengaruh. ARI yang rendah berarti fitur itu menentukan.")
             st.dataframe(pf, hide_index=True, **LEBAR)
+            kol_ari = 'ARI terhadap klaster asli'
+            if {'Fitur dibuang', kol_ari}.issubset(pf.columns) and len(pf) >= 2:
+                p = pf.sort_values(kol_ari)
+                menentukan, lemah = p.iloc[0], p.iloc[-1]
+                info_box(
+                    f"Menurut pengujian ini, fitur yang <b>paling menentukan</b> klaster adalah "
+                    f"<b>{menentukan['Fitur dibuang']}</b> (ARI {str(round(float(menentukan[kol_ari]), 3)).replace('.', ',')}), "
+                    f"sedangkan <b>{lemah['Fitur dibuang']}</b> paling kecil pengaruhnya "
+                    f"(ARI {str(round(float(lemah[kol_ari]), 3)).replace('.', ',')}). "
+                    "Karena itu, nama kelompok sebaiknya dibaca dari ciri rata-ratanya, bukan dari satu fitur saja."
+                )
 
         st.markdown("##### Mengapa produk ini masuk klaster tersebut?")
         if "Alasan_Klaster" in rfm.columns:
@@ -1550,8 +1625,11 @@ def halaman_upload_data():
             st.warning(f"🚩 **{ins['champion_count']}** produk Champion, **{ins['outlier_count']}** outlier")
 
     with tabs[1]:
-        st.plotly_chart(px.scatter(rfm_baru, x="Frequency", y="Monetary", color="Segment_Cluster", size="Total_QTY",
-                                   hover_name="ITEM", log_y=True, color_discrete_map=WARNA_KLASTER), **LEBAR)
+        urut_up = sorted(rfm_baru["Segment_Cluster"].unique())
+        st.caption("Sumbu 3D = fitur yang dipakai K-Means (Recency, Frequency, Monetary). Ukuran titik = total kuantitas.")
+        st.plotly_chart(px.scatter_3d(rfm_baru, x="Recency", y="Frequency", z="Monetary", color="Segment_Cluster",
+                                      size="Total_QTY", hover_name="ITEM", color_discrete_map=WARNA_KLASTER,
+                                      category_orders={"Segment_Cluster": urut_up}), **LEBAR)
         st.dataframe(format_tabel_rupiah(rfm_baru, ['Monetary']), **LEBAR)
         st.download_button("Unduh Hasil RFM Produk (CSV)", rfm_baru.to_csv(index=False).encode("utf-8"), "hasil_rfm_produk_baru.csv", "text/csv")
 
