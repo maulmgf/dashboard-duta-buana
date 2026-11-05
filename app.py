@@ -1525,3 +1525,365 @@ def halaman_segmentasi_customer():
     tampil = rfm_customer[rfm_customer['Segment_Customer'].isin(filter_segmen)].sort_values('RFM_Score', ascending=False)
     st.dataframe(format_tabel_rupiah(tampil[['NAMA_CUSTOMER', 'Recency', 'Frequency', 'Monetary', 'RFM_Score', 'Segment_Customer']], ['Monetary']),
                  **LEBAR, hide_index=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 7 — HALAMAN: POLA BELI (ASSOCIATION RULES)
+# ════════════════════════════════════════════════════════════════
+
+def halaman_pola_beli():
+    render_brand_header()
+    st.title("Pola Beli")
+    info_box(
+        "Halaman ini memakai <b>Association Rules (Apriori)</b> untuk menemukan produk yang sering dibeli "
+        "bersamaan dalam satu invoice. <b>Support</b> = proporsi invoice yang memuat kedua sisi aturan, "
+        "<b>Confidence</b> = peluang konsekuen dibeli bila anteseden sudah ada di keranjang, "
+        "<b>Lift</b> &gt; 1 = produk dibeli bersamaan lebih sering daripada kebetulan."
+    )
+    data = load_data(_versi_data())
+    rules = data["rules"].copy()
+
+    if rules.empty:
+        st.warning("Belum ada aturan asosiasi pada berkas Excel saat ini.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Aturan", _id(len(rules)))
+    c2.metric("Lift Maksimum", f"{rules['lift'].max():.2f}".replace(".", ","))
+    c3.metric("Rata-rata Confidence", f"{rules['confidence'].mean()*100:.1f}%".replace(".", ","))
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    f1, f2 = st.columns(2)
+    min_lift = f1.slider("Lift minimum", 1.0, float(max(rules['lift'].max(), 1.1)), 1.2, 0.1)
+    min_conf = f2.slider("Confidence minimum", 0.0, 1.0, 0.3, 0.05)
+    cari = st.text_input("Cari produk (opsional)", "").strip().upper()
+
+    hasil = rules[(rules['lift'] >= min_lift) & (rules['confidence'] >= min_conf)]
+    if cari:
+        hasil = hasil[hasil['antecedents'].str.upper().str.contains(cari, regex=False) |
+                      hasil['consequents'].str.upper().str.contains(cari, regex=False)]
+    hasil = hasil.sort_values('lift', ascending=False)
+
+    st.caption(f"Menampilkan {len(hasil)} dari {len(rules)} aturan.")
+    if hasil.empty:
+        st.info("Tidak ada aturan yang memenuhi filter. Longgarkan batas lift atau confidence.")
+        return
+
+    colg1, colg2 = st.columns(2)
+    with colg1:
+        st.markdown("##### Support vs Confidence (warna = lift)")
+        st.plotly_chart(px.scatter(hasil, x='support', y='confidence', color='lift',
+                                   color_continuous_scale="Reds",
+                                   hover_data=['antecedents', 'consequents']), **LEBAR)
+    with colg2:
+        st.markdown("##### 10 Aturan dengan Lift Tertinggi")
+        t10 = hasil.head(10).copy()
+        t10['Aturan'] = t10['antecedents'] + " → " + t10['consequents']
+        fig = px.bar(t10, x='lift', y='Aturan', orientation='h', color_discrete_sequence=["#B91C1C"])
+        fig.update_layout(yaxis={'categoryorder': 'total ascending'}, separators=",.")
+        st.plotly_chart(fig, **LEBAR)
+
+    st.markdown("##### Tabel Aturan")
+    tampil = hasil[['antecedents', 'consequents', 'support', 'confidence', 'lift']].rename(
+        columns={'antecedents': 'Jika membeli', 'consequents': 'Maka juga membeli',
+                 'support': 'Support', 'confidence': 'Confidence', 'lift': 'Lift'}).round(3)
+    st.dataframe(tampil, hide_index=True, **LEBAR)
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 8 — HALAMAN: PRODUCT RECOMMENDER
+# ════════════════════════════════════════════════════════════════
+
+def halaman_product_recommender():
+    render_brand_header()
+    st.title("Product Recommender")
+    info_box("Pilih sebuah produk untuk melihat posisinya pada segmentasi (RFM dan K-Means) serta produk lain "
+             "yang paling sering dibeli bersamanya berdasarkan aturan asosiasi.")
+    data = load_data(_versi_data())
+
+    produk = st.selectbox("Pilih produk", sorted(data["rfm"]["ITEM"].unique()), key="rec_produk")
+    top_n = st.slider("Jumlah rekomendasi", 3, 10, 5)
+    hasil = rekomendasi_produk(produk, data, top_n=top_n)
+    if hasil is None:
+        st.warning("Produk tidak ditemukan pada data RFM.")
+        return
+
+    c1, c2 = st.columns(2)
+    c1.metric("Segmen RFM", str(hasil["segment_rfm"]))
+    c2.metric("Klaster K-Means", str(hasil["segment_cluster"]))
+    c3, c4, c5 = st.columns(3)
+    c3.metric("Recency (hari)", _id(hasil["recency"]) if pd.notna(hasil["recency"]) else "-")
+    c4.metric("Frequency (invoice)", _id(hasil["frequency"]) if pd.notna(hasil["frequency"]) else "-")
+    c5.metric("Monetary", format_rupiah(hasil["monetary"]))
+
+    if hasil["alasan"]:
+        with st.expander("Mengapa produk ini masuk klaster tersebut?"):
+            st.write(hasil["alasan"])
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.subheader("Sering Dibeli Bersama")
+    rt = hasil["rules_terkait"]
+    if rt.empty:
+        st.info("Belum ada aturan asosiasi yang melibatkan produk ini (data pembelian bersamanya terlalu sedikit).")
+        return
+    kolom = [c for c in ['antecedents', 'consequents', 'support', 'confidence', 'lift'] if c in rt.columns]
+    st.dataframe(rt[kolom].rename(columns={'antecedents': 'Jika membeli', 'consequents': 'Maka juga membeli',
+                                           'support': 'Support', 'confidence': 'Confidence', 'lift': 'Lift'}).round(3),
+                 hide_index=True, **LEBAR)
+    teratas = rt.iloc[0]
+    st.success(f"Aturan terkuat: pembeli **{teratas['antecedents']}** cenderung juga membeli "
+               f"**{teratas['consequents']}** (confidence {teratas['confidence']*100:.1f}%, lift {teratas['lift']:.2f}).".replace(".", ",", 0))
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 9 — HALAMAN: SIMULASI BUNDLING
+# ════════════════════════════════════════════════════════════════
+
+def halaman_simulasi_bundling():
+    render_brand_header()
+    st.title("Simulasi Bundling")
+    info_box("Pilih dua produk untuk menguji apakah layak dijual sebagai paket. Bila pasangan itu tidak ada pada "
+             "aturan asosiasi resmi, kekuatannya dihitung langsung dari data transaksi.")
+    data = load_data(_versi_data())
+    daftar = sorted(data["rfm"]["ITEM"].unique())
+
+    c1, c2 = st.columns(2)
+    produk_a = c1.selectbox("Produk A", daftar, key="bund_a")
+    produk_b = c2.selectbox("Produk B", daftar, index=min(1, len(daftar) - 1), key="bund_b")
+
+    if produk_a == produk_b:
+        st.info("Pilih dua produk yang berbeda.")
+        return
+
+    hasil = simulasi_bundling(produk_a, produk_b, data)
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+
+    if hasil["status"] == "ditemukan_resmi":
+        support, conf, lift = hasil["support"], hasil["confidence"], hasil["lift"]
+        st.markdown('<span class="badge-ok">Aturan asosiasi resmi ditemukan</span>', unsafe_allow_html=True)
+    elif hasil["status"] == "dihitung_langsung":
+        support, conf, lift = hasil["support"], max(hasil["conf_a_to_b"], hasil["conf_b_to_a"]), hasil["lift"]
+        st.markdown('<span class="badge-info">Dihitung langsung dari transaksi</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="badge-warn">Tidak pernah dibeli bersamaan</span>', unsafe_allow_html=True)
+        st.warning(f"**{produk_a}** dan **{produk_b}** tidak pernah muncul dalam invoice yang sama pada data. "
+                   "Bundling kedua produk ini tidak punya dasar dari riwayat pembelian.")
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Support", f"{support*100:.2f}%".replace(".", ","))
+    m2.metric("Confidence", f"{conf*100:.1f}%".replace(".", ","))
+    m3.metric("Lift", f"{lift:.2f}".replace(".", ","))
+
+    if hasil["status"] == "dihitung_langsung":
+        st.caption(f"Muncul bersama di {hasil['both']} invoice dari {hasil['total_invoice']} invoice "
+                   f"({produk_a}: {hasil['count_a']} invoice, {produk_b}: {hasil['count_b']} invoice).")
+
+    if lift >= 1.5:
+        st.success("**Layak dibundling.** Kedua produk dibeli bersamaan jauh lebih sering daripada kebetulan.")
+    elif lift > 1:
+        st.info("**Cukup layak.** Ada keterkaitan, tetapi tidak terlalu kuat. Pertimbangkan promo ringan.")
+    else:
+        st.warning("**Kurang layak.** Lift ≤ 1: kedua produk tidak lebih sering dibeli bersamaan daripada kebetulan.")
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 10 — HALAMAN: PETA KORELASI
+# ════════════════════════════════════════════════════════════════
+
+@st.cache_data
+def _korelasi_cache(versi_file, top_n):
+    return hitung_matriks_korelasi(load_data(versi_file)["transaksi"], top_n)
+
+
+def halaman_peta_korelasi():
+    render_brand_header()
+    st.title("Peta Korelasi")
+    info_box("Peta panas ini menunjukkan seberapa sering dua produk muncul dalam invoice yang sama "
+             "(korelasi biner). Merah pekat = cenderung dibeli bersamaan, biru = jarang bersamaan.")
+    data = load_data(_versi_data())
+    maks = int(min(30, data["transaksi"]["ITEM"].nunique()))
+    top_n = st.slider("Jumlah produk terlaris yang ditampilkan", 5, max(maks, 6), min(15, maks))
+
+    matriks, items = _korelasi_cache(_versi_data(), top_n)
+    fig = px.imshow(matriks, color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto",
+                    labels=dict(color="Korelasi"))
+    fig.update_layout(height=650)
+    st.plotly_chart(fig, **LEBAR)
+
+    pasangan = []
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            pasangan.append({'Produk A': items[i], 'Produk B': items[j], 'Korelasi': round(float(matriks.iloc[i, j]), 3)})
+    pasangan = pd.DataFrame(pasangan).sort_values('Korelasi', ascending=False)
+    st.markdown("##### 10 Pasangan dengan Korelasi Tertinggi")
+    st.dataframe(pasangan.head(10), hide_index=True, **LEBAR)
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 11 — HALAMAN: KALKULATOR KERANJANG
+# ════════════════════════════════════════════════════════════════
+
+def halaman_kalkulator_keranjang():
+    render_brand_header()
+    st.title("Kalkulator Keranjang")
+    info_box("Pilih produk dan jumlahnya untuk menghitung perkiraan nilai belanja berdasarkan harga rata-rata "
+             "historis, lalu lihat produk tambahan yang disarankan oleh aturan asosiasi.")
+    data = load_data(_versi_data())
+    trx = data["transaksi"]
+    rules = data["rules"]
+
+    harga = (trx.groupby("ITEM").agg(Revenue=("HARGA_JUAL", "sum"), Qty=("QTY", "sum")))
+    harga["Harga_Rata2"] = harga["Revenue"] / harga["Qty"]
+
+    pilihan = st.multiselect("Pilih produk", sorted(harga.index.tolist()), key="keranjang")
+    if not pilihan:
+        st.info("Pilih satu atau lebih produk untuk memulai.")
+        return
+
+    baris = []
+    for p in pilihan:
+        qty = st.number_input(f"Jumlah {p}", min_value=1, value=1, step=1, key=f"qty_{p}")
+        baris.append({"Produk": p, "Qty": int(qty), "Harga Rata-rata": harga.loc[p, "Harga_Rata2"],
+                      "Subtotal": harga.loc[p, "Harga_Rata2"] * qty})
+    tabel = pd.DataFrame(baris)
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    st.dataframe(format_tabel_rupiah(tabel, ["Harga Rata-rata", "Subtotal"]), hide_index=True, **LEBAR)
+    st.metric("Perkiraan Total Belanja", format_rupiah_penuh(tabel["Subtotal"].sum()))
+    st.caption("Harga rata-rata = total revenue dibagi total kuantitas terjual pada data 2025. Bukan daftar harga resmi.")
+
+    # Saran produk tambahan: aturan yang semua anteseden-nya sudah ada di keranjang
+    keranjang = set(pilihan)
+    saran = []
+    for _, r in rules.iterrows():
+        ante = {x.strip() for x in str(r["antecedents"]).split(",")}
+        kons = {x.strip() for x in str(r["consequents"]).split(",")}
+        if ante and ante.issubset(keranjang) and not kons.issubset(keranjang):
+            for k in kons - keranjang:
+                saran.append({"Produk disarankan": k, "Karena membeli": ", ".join(sorted(ante)),
+                              "Confidence": round(float(r["confidence"]), 3), "Lift": round(float(r["lift"]), 2)})
+    st.subheader("Saran Produk Tambahan")
+    if saran:
+        df_saran = (pd.DataFrame(saran).sort_values("Lift", ascending=False)
+                    .drop_duplicates("Produk disarankan"))
+        st.dataframe(df_saran, hide_index=True, **LEBAR)
+    else:
+        st.info("Tidak ada aturan asosiasi yang cocok dengan isi keranjang ini.")
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 12 — HALAMAN: UPLOAD DATA
+# ════════════════════════════════════════════════════════════════
+
+def halaman_upload_data():
+    render_brand_header()
+    st.title("Upload Data")
+    info_box("Unggah berkas Excel transaksi baru untuk menjalankan ulang seluruh analisis (RFM, K-Means, Apriori, "
+             "segmentasi customer) langsung di sini. Hasil ini <b>tidak</b> menimpa Dashboard_streamlit.xlsx. "
+             "Kolom wajib: " + ", ".join(KOLOM_WAJIB) + ".")
+    berkas = st.file_uploader("Pilih berkas Excel (.xlsx)", type=["xlsx"])
+    if berkas is None:
+        return
+
+    df_up, jenis = baca_berkas_upload(berkas)
+    if df_up is None:
+        st.error("Format berkas tidak dikenali. Pastikan memuat kolom wajib, atau memakai format mentah asli (header di baris ke-5).")
+        return
+    st.success(f"Berkas terbaca ({'format rapi' if jenis == 'rapi' else 'format mentah asli'}): {_id(len(df_up))} baris.")
+
+    if st.button("Jalankan Analisis", type="primary"):
+        with st.spinner("Menjalankan pipeline analisis, mohon tunggu..."):
+            hasil = jalankan_pipeline_baru(df_up)
+            if hasil.get("error"):
+                st.error(hasil["error"])
+                return
+            cust = jalankan_pipeline_customer_baru(df_up, hasil["df_bersih"])
+        st.session_state["hasil_upload"] = hasil
+        st.session_state["hasil_upload_cust"] = cust
+
+    hasil = st.session_state.get("hasil_upload")
+    cust = st.session_state.get("hasil_upload_cust")
+    if not hasil:
+        return
+
+    st.markdown('<hr class="header-garis">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Revenue", format_rupiah(hasil["revenue"]))
+    c2.metric("Total Invoice", _id(hasil["jumlah_invoice"]))
+    c3.metric("Total Produk", _id(hasil["jumlah_produk"]))
+    c4.metric("Total Customer", _id(hasil["jumlah_customer"]))
+
+    tab_bersih, tab_prod, tab_km, tab_apr, tab_cust = st.tabs(
+        ["🧹 Pembersihan", "🏷️ RFM Produk", "🔷 K-Means", "🛒 Apriori", "👥 Customer"])
+
+    with tab_bersih:
+        st.dataframe(hasil["funnel"], hide_index=True, **LEBAR)
+
+    with tab_prod:
+        rfm = hasil["rfm"]
+        seg = rfm["Segment_RFM"].value_counts().rename_axis("Segmen").reset_index(name="Jumlah Produk")
+        st.plotly_chart(donat(seg, "Segmen", "Jumlah Produk", WARNA_SEGMEN, URUTAN_SEGMEN), **LEBAR)
+        st.caption(teks_caption_interval())
+        tampilkan_interval(hasil["interval_rfm"], "Jumlah Produk")
+        st.dataframe(format_tabel_rupiah(rfm[['ITEM', 'Recency', 'Frequency', 'Monetary', 'RFM_Score', 'Segment_RFM']]
+                                         .sort_values('RFM_Score', ascending=False), ['Monetary']),
+                     hide_index=True, **LEBAR)
+        st.download_button("Unduh RFM Produk (CSV)", rfm.to_csv(index=False).encode("utf-8"),
+                           "rfm_produk.csv", "text/csv")
+
+    with tab_km:
+        m1, m2 = st.columns(2)
+        m1.metric("K Optimal", hasil["k_optimal"])
+        m2.metric("Silhouette Score", f"{hasil['silhouette']:.3f}".replace(".", ","))
+        st.markdown("##### Evaluasi Jumlah Klaster")
+        st.dataframe(hasil["eval_k"].round(3), hide_index=True, **LEBAR)
+        st.markdown("##### Profil Klaster")
+        st.dataframe(format_tabel_rupiah(hasil["profil_klaster"].drop(columns=['Cluster']), KOLOM_RUPIAH_KLASTER),
+                     hide_index=True, **LEBAR)
+        st.markdown("##### Metrik Evaluasi")
+        st.dataframe(hasil["evaluasi_kmeans"].round(3), hide_index=True, **LEBAR)
+        st.markdown("##### Pengaruh Fitur")
+        st.dataframe(hasil["pengaruh_fitur"], hide_index=True, **LEBAR)
+        with st.expander("Aturan interval klaster (decision tree)"):
+            st.caption(f"Akurasi tiruan terhadap hasil K-Means: {hasil['akurasi_aturan']*100:.1f}%".replace(".", ","))
+            st.code(hasil["aturan_teks"])
+
+    with tab_apr:
+        st.metric("Total Aturan", _id(hasil["jumlah_rules"]))
+        st.dataframe(hasil["evaluasi_apriori"].round(3), hide_index=True, **LEBAR)
+        if hasil["jumlah_rules"]:
+            st.dataframe(hasil["rules_rapi"][['antecedents', 'consequents', 'support', 'confidence', 'lift']].round(3),
+                         hide_index=True, **LEBAR)
+        else:
+            st.info("Tidak ada aturan asosiasi yang memenuhi ambang minimum pada data ini.")
+
+    with tab_cust:
+        if not cust or cust.get("error"):
+            st.warning(cust.get("error") if cust else "Segmentasi customer belum tersedia.")
+        else:
+            rc = cust["rfm_customer"]
+            segc = rc["Segment_Customer"].value_counts().rename_axis("Segmen").reset_index(name="Jumlah Customer")
+            st.plotly_chart(donat(segc, "Segmen", "Jumlah Customer", WARNA_SEGMEN, URUTAN_SEGMEN), **LEBAR)
+            st.dataframe(format_tabel_rupiah(cust["karakteristik"], ["Monetary"]), **LEBAR)
+            tampilkan_interval(cust["interval"], "Jumlah Customer")
+            st.download_button("Unduh RFM Customer (CSV)", rc.to_csv(index=False).encode("utf-8"),
+                               "rfm_customer.csv", "text/csv")
+
+
+# ════════════════════════════════════════════════════════════════
+# BAGIAN 13 — PEMANGGIL HALAMAN (WAJIB ADA DI PALING BAWAH)
+# ════════════════════════════════════════════════════════════════
+
+PETA_HALAMAN = {
+    "Ringkasan": halaman_ringkasan,
+    "Segmentasi Produk": halaman_segmentasi_produk,
+    "Segmentasi Customer": halaman_segmentasi_customer,
+    "Pola Beli": halaman_pola_beli,
+    "Product Recommender": halaman_product_recommender,
+    "Simulasi Bundling": halaman_simulasi_bundling,
+    "Peta Korelasi": halaman_peta_korelasi,
+    "Kalkulator Keranjang": halaman_kalkulator_keranjang,
+    "Upload Data": halaman_upload_data,
+}
+
+PETA_HALAMAN[halaman]()
