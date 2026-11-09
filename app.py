@@ -640,7 +640,6 @@ def jalankan_pipeline_baru(df_upload):
 
     # ── RFM Analysis ──
     rfm = hitung_skor_rfm(rfm)
-    rfm['RFM_Index'] = rfm['R_Score'] * 0.2 + rfm['F_Score'] * 0.4 + rfm['M_Score'] * 0.4
     rfm['Segment_RFM'] = rfm['RFM_Score'].apply(rfm_segment)
     interval_rfm = pd.concat([tabel_interval(rfm, 'Recency', False, 'hari'),
                               tabel_interval(rfm, 'Frequency', True, 'invoice'),
