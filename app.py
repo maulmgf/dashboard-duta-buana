@@ -1714,25 +1714,29 @@ def halaman_upload_data():
         f"lift ≥ {str(MIN_LIFT).replace('.', ',')})."
     )
 
-    berkas = st.file_uploader("Pilih berkas Excel (.xlsx)", type=["xlsx"])
-    if berkas is None:
+    berkas = st.file_uploader("Pilih berkas Excel (.xlsx)", type=["xlsx"], key="upload_berkas")
+    if berkas is not None:
+        # Berkas baru: baca sekali dan buang hasil analisis lama (mencegah hasil basi tampil)
+        sig = (berkas.name, getattr(berkas, "size", None))
+        if st.session_state.get("upload_sig") != sig:
+            for k in ("hasil_upload_produk", "hasil_upload_customer", "upload_df", "upload_format"):
+                st.session_state.pop(k, None)
+            try:
+                df_baca, fmt_baca = baca_berkas_upload(berkas)
+            except Exception as e:
+                st.error(f"Gagal membaca berkas: {e}")
+                st.session_state.pop("upload_sig", None)
+                return
+            st.session_state["upload_sig"] = sig
+            st.session_state["upload_df"] = df_baca
+            st.session_state["upload_format"] = fmt_baca
+    elif st.session_state.get("upload_df") is None:
         st.info("Silakan unggah berkas Excel untuk memulai.")
         return
-
-    # Berkas baru: baca sekali dan buang hasil analisis lama (mencegah hasil basi tampil)
-    sig = (berkas.name, getattr(berkas, "size", None))
-    if st.session_state.get("upload_sig") != sig:
-        for k in ("hasil_upload_produk", "hasil_upload_customer", "upload_df", "upload_format"):
-            st.session_state.pop(k, None)
-        try:
-            df_baca, fmt_baca = baca_berkas_upload(berkas)
-        except Exception as e:
-            st.error(f"Gagal membaca berkas: {e}")
-            st.session_state.pop("upload_sig", None)
-            return
-        st.session_state["upload_sig"] = sig
-        st.session_state["upload_df"] = df_baca
-        st.session_state["upload_format"] = fmt_baca
+    else:
+        # Widget uploader dikosongkan Streamlit saat pindah halaman; data dan hasil tetap ada di session_state
+        nama = (st.session_state.get("upload_sig") or ("berkas sebelumnya",))[0]
+        st.caption(f"Menampilkan data dan hasil dari berkas yang sudah diunggah: {nama}. Unggah berkas baru untuk menggantinya.")
 
     df_upload = st.session_state.get("upload_df")
     format_terdeteksi = st.session_state.get("upload_format")
