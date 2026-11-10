@@ -1198,15 +1198,18 @@ def halaman_segmentasi_produk():
     rfm = data["rfm"]
     tampilkan_peringatan_data(data)
 
-    # Pilihan tab disimpan di session_state agar tombol di halaman Ringkasan bisa membuka tab tertentu
-    if "tab_produk_tujuan" in st.session_state:
-        st.session_state["tab_produk"] = st.session_state.pop("tab_produk_tujuan")
-    elif st.session_state.get("tab_produk") not in TAB_PRODUK:
-        st.session_state["tab_produk"] = TAB_PRODUK[0]
-    tab_aktif = st.radio("Tampilan", TAB_PRODUK, horizontal=True, key="tab_produk", label_visibility="collapsed")
+    # Tab bawaan Streamlit. Dengan on_change="rerun" dan key, tab aktif bisa diatur lewat session_state,
+    # sehingga tombol di halaman Ringkasan dapat membuka tab K-Means atau RFM secara langsung.
+    _tujuan = st.session_state.pop("tab_produk_tujuan", None)
+    if _tujuan:
+        st.session_state["tab_produk"] = _tujuan
+    try:
+        tab_rfm, tab_kmeans, tab_validasi, tab_outlier = st.tabs(TAB_PRODUK, key="tab_produk", on_change="rerun")
+    except TypeError:  # Streamlit versi lama: tab selalu mulai dari tab pertama
+        tab_rfm, tab_kmeans, tab_validasi, tab_outlier = st.tabs(TAB_PRODUK)
 
     # ── TAB RFM ──
-    if tab_aktif == TAB_PRODUK[0]:
+    with tab_rfm:
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Produk", len(rfm))
         c2.metric("Segmen Champion", int((rfm['Segment_RFM'] == 'Champion').sum()))
@@ -1264,7 +1267,7 @@ def halaman_segmentasi_produk():
                          **LEBAR, hide_index=True)
 
     # ── TAB K-MEANS ──
-    if tab_aktif == TAB_PRODUK[1]:
+    with tab_kmeans:
         info_box(
             "<b>Cara membaca klaster:</b> label seperti \"Recency rata-rata paling baru\" menggambarkan "
             "<b>rata-rata</b> klaster, bukan sifat setiap produk di dalamnya. Nilai tiap produk bisa "
@@ -1371,7 +1374,7 @@ def halaman_segmentasi_produk():
             st.dataframe(format_tabel_rupiah(tampil_k[kolom_k], ['Monetary']), **LEBAR, hide_index=True)
 
     # ── TAB VALIDASI SILANG ──
-    if tab_aktif == TAB_PRODUK[2]:
+    with tab_validasi:
         info_box(
             "Tabel ini membandingkan dua metode yang bekerja independen — K-Means <b>tidak</b> menggunakan "
             "Segment_RFM sebagai input. Kesesuaian hasil keduanya adalah gambaran konsistensi, "
@@ -1409,7 +1412,7 @@ def halaman_segmentasi_produk():
                                    "(skor kuantil vs jarak antar-produk), sehingga hasilnya tidak harus sama.")
 
     # ── TAB OUTLIER ──
-    if tab_aktif == TAB_PRODUK[3]:
+    with tab_outlier:
         info_box(
             "Produk dengan nilai Monetary lebih dari dua kali lipat median segmen RFM-nya. "
             "Outlier ini memengaruhi rata-rata (mean) pada grafik segmen, sehingga perlu dibaca "
