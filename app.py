@@ -98,8 +98,13 @@ def apply_custom_theme():
         section[data-testid="stSidebar"] .stButton>button:hover {{
             background-color: rgba(255,255,255,0.22) !important;
         }}
-        section[data-testid="stSidebar"] .nav-aktif .stButton>button {{
-            background-color: white !important; color: {MERAH_UTAMA} !important; font-weight: 700 !important;
+        section[data-testid="stSidebar"] .stButton>button[kind="primary"],
+        section[data-testid="stSidebar"] .stButton>button[data-testid="stBaseButton-primary"] {{
+            background-color: white !important; font-weight: 700 !important;
+        }}
+        section[data-testid="stSidebar"] .stButton>button[kind="primary"] *,
+        section[data-testid="stSidebar"] .stButton>button[data-testid="stBaseButton-primary"] * {{
+            color: {MERAH_UTAMA} !important; font-weight: 700 !important;
         }}
 
         .stButton>button {{
@@ -259,11 +264,25 @@ def format_rupiah_penuh(nilai):
     return f"Rp {_id(float(nilai), 0)}"
 
 
+def format_rupiah_singkat(nilai):
+    """Format singkat untuk tabel: Rb (ribu), Jt (juta), M (miliar). Contoh: Rp 130,03 Jt."""
+    if nilai is None or pd.isna(nilai):
+        return "Rp 0"
+    nilai = float(nilai); a = abs(nilai); tanda = "-" if nilai < 0 else ""
+    if a >= 1e9:
+        return f"{tanda}Rp {_id(a/1e9, 2)} M"
+    elif a >= 1e6:
+        return f"{tanda}Rp {_id(a/1e6, 2)} Jt"
+    elif a >= 1e3:
+        return f"{tanda}Rp {_id(a/1e3, 0)} Rb"
+    return f"{tanda}Rp {_id(a, 0)}"
+
+
 def format_tabel_rupiah(df_input, kolom_list):
     df_tampil = df_input.copy()
     for kolom in kolom_list:
         if kolom in df_tampil.columns:
-            df_tampil[kolom] = df_tampil[kolom].apply(format_rupiah_penuh)
+            df_tampil[kolom] = df_tampil[kolom].apply(format_rupiah_singkat)
     return df_tampil
 
 
@@ -848,12 +867,9 @@ with st.sidebar:
     )
     for item in MENU:
         aktif = (item == st.session_state.halaman_aktif)
-        wrapper_class = "nav-aktif" if aktif else "nav-nonaktif"
-        st.markdown(f'<div class="{wrapper_class}">', unsafe_allow_html=True)
-        if st.button(item, key=f"nav_{item}", **LEBAR):
+        if st.button(item, key=f"nav_{item}", type="primary" if aktif else "secondary", **LEBAR):
             st.session_state.halaman_aktif = item
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
 halaman = st.session_state.halaman_aktif
 
@@ -1427,8 +1443,8 @@ def halaman_segmentasi_produk():
                 for _, row in outliers.iterrows():
                     outlier_list.append({
                         'Produk': row['ITEM'], 'Segmen RFM': segmen,
-                        'Monetary Produk': format_rupiah_penuh(row['Monetary']),
-                        'Median Segmen': format_rupiah_penuh(median_segmen),
+                        'Monetary Produk': format_rupiah_singkat(row['Monetary']),
+                        'Median Segmen': format_rupiah_singkat(median_segmen),
                         'Selisih dari Median': f"{row['Monetary'] / median_segmen:.1f}x"
                     })
         if outlier_list:
